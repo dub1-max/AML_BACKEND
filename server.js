@@ -442,7 +442,7 @@ app.post('/api/registerIndividual', requireAuth, async (req, res) => { // Added 
             passport_number, passport_expiry, address, state, city, zip_code,
             contact_number, dialing_code, work_type, industry,
             product_type_offered, product_offered, company_name, position_in_company
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `; // Corrected: Only one VALUES clause
 
     const values = [
@@ -474,9 +474,13 @@ app.post('/api/registerIndividual', requireAuth, async (req, res) => { // Added 
         positionInCompany
     ];
 
-    await pool.execute(insertQuery, values);
-
-    res.status(201).json({ message: 'Individual registration successful' });
+    try {
+        await pool.execute(insertQuery, values);
+        res.status(201).json({ message: 'Individual registration successful' });
+    } catch (dbError) {
+        console.error('Database error:', dbError);
+        return res.status(500).json({ message: 'Database error during registration', error: dbError });
+    }
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ message: 'Email already registered.' });
