@@ -1,3 +1,4 @@
+// server.js (or your main server file)
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
@@ -10,21 +11,21 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 app.use(cors({
-    origin: 'http://localhost:5173', // Replace with your frontend origin (or an array)
-    credentials: true,  // Important: Allow sending cookies with requests
+    origin: 'http://localhost:5173',  // Replace with your frontend's origin
+    credentials: true,
 }));
 
 app.use(express.json());
 
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'your-super-secret-key', // Use a strong secret!  Store in .env
+    secret: process.env.SESSION_SECRET || 'your-super-secret-key', // Use a strong secret in production
     resave: false,
     saveUninitialized: false,
     cookie: {
         secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
         httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24, // 24 hours
-        sameSite: 'lax', // Add SameSite attribute.  'lax' is generally a good default.
+        maxAge: 1000 * 60 * 60 * 24, // Cookie expiration time (e.g., 24 hours)
+        sameSite: 'lax', // Recommended for security
     },
 }));
 
@@ -49,7 +50,6 @@ const SANCTIONS_URLS = [
 const UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 
 // --- Helper Functions ---
-
 function calculateRiskLevel(dataset) {
     if (dataset.includes('terrorists')) return 100;
     if (dataset.includes('sanctions')) return 85;
@@ -66,7 +66,6 @@ function getTypeFromDataset(dataset) {
 }
 
 // --- Data Fetching and Population ---
-
 async function fetchAndPopulateData() {
     try {
         for (const url of SANCTIONS_URLS) {
@@ -109,9 +108,7 @@ async function fetchAndPopulateData() {
     }
 }
 
-
-// --- Database Initialization (IIFE) ---
-
+// --- Database Initialization ---
 (async () => {
     try {
         const connection = await pool.getConnection();
@@ -160,57 +157,85 @@ async function fetchAndPopulateData() {
             )
         `);
         console.log("✅ User Tracking table ready.");
-          // Create individualob table
+
+        // Create individualob table
         await pool.execute(`
-          CREATE TABLE IF NOT EXISTS individualob (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT,
-            full_name VARCHAR(255) NOT NULL,
-            email VARCHAR(255) NOT NULL UNIQUE,
-            resident_status VARCHAR(50),
-            gender VARCHAR(50),
-            date_of_birth DATE,
-            nationality VARCHAR(255),
-            country_of_residence VARCHAR(255),
-            other_nationalities TINYINT(1),
-            specified_other_nationalities VARCHAR(255),
-            national_id_number VARCHAR(255),
-            national_id_expiry DATE,
-            passport_number VARCHAR(255),
-            passport_expiry DATE,
-            address VARCHAR(255),
-            state VARCHAR(255),
-            city VARCHAR(255),
-            zip_code VARCHAR(255),
-            contact_number VARCHAR(255),
-            dialing_code VARCHAR(255),
-            work_type VARCHAR(50),
-            industry VARCHAR(255),
-            product_type_offered VARCHAR(255),
-            product_offered VARCHAR(255),
-            company_name VARCHAR(255),
-            position_in_company VARCHAR(255),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-          );
+            CREATE TABLE IF NOT EXISTS individualob (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
+                full_name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                resident_status VARCHAR(50),
+                gender VARCHAR(50),
+                date_of_birth DATE,
+                nationality VARCHAR(255),
+                country_of_residence VARCHAR(255),
+                other_nationalities TINYINT(1),
+                specified_other_nationalities VARCHAR(255),
+                national_id_number VARCHAR(255),
+                national_id_expiry DATE,
+                passport_number VARCHAR(255),
+                passport_expiry DATE,
+                address VARCHAR(255),
+                state VARCHAR(255),
+                city VARCHAR(255),
+                zip_code VARCHAR(255),
+                contact_number VARCHAR(255),
+                dialing_code VARCHAR(255),
+                work_type VARCHAR(50),
+                industry VARCHAR(255),
+                product_type_offered VARCHAR(255),
+                product_offered VARCHAR(255),
+                company_name VARCHAR(255),
+                position_in_company VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
         `);
         console.log("✅ individualob table ready.");
 
+        // Create companyob table
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS companyob (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
+                company_name VARCHAR(255) NOT NULL,
+                registration_number VARCHAR(255),
+                company_type VARCHAR(100),
+                incorporation_date DATE,
+                business_nature VARCHAR(255),
+                industry_sector VARCHAR(255),
+                annual_turnover DECIMAL(15,2),
+                employee_count INT,
+                website_url VARCHAR(255),
+                registered_address VARCHAR(255),
+                operating_address VARCHAR(255),
+                country VARCHAR(100),
+                state VARCHAR(100),
+                city VARCHAR(100),
+                postal_code VARCHAR(20),
+                contact_person_name VARCHAR(255),
+                contact_email VARCHAR(255) UNIQUE,
+                contact_phone VARCHAR(50),
+                tax_number VARCHAR(100),
+                regulatory_licenses TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        `);
+        console.log("✅ companyob table ready.");
 
-        await fetchAndPopulateData(); // Populate initially
-        setInterval(fetchAndPopulateData, UPDATE_INTERVAL); // And periodically
+        await fetchAndPopulateData();
+        setInterval(fetchAndPopulateData, UPDATE_INTERVAL);
 
     } catch (error) {
         console.error("❌ Database setup error:", error);
-        process.exit(1); // Exit on critical error
+        process.exit(1);
     }
 })();
 
-
 // --- Middleware for Authentication ---
-
 const requireAuth = (req, res, next) => {
-    // console.log("Session:", req.session); // Debugging: Check session content
     if (!req.session.user || !req.session.user.id) {
         return res.status(401).json({ message: "Not authenticated" });
     }
@@ -218,7 +243,6 @@ const requireAuth = (req, res, next) => {
 };
 
 // --- Authentication Routes ---
-// Signup
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name, role } = req.body;
@@ -245,7 +269,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// Login
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -265,10 +288,8 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
 
-          // Correctly set the session
         req.session.user = { id: user.id, email: user.email, name: user.name, role: user.role };
-        req.session.isAuthenticated = true; // You can use this flag if needed
-
+        req.session.isAuthenticated = true;  // You can use this if you need it elsewhere
 
         res.json({ message: 'Login successful', user: { id: user.id, email: user.email, name: user.name, role: user.role } });
 
@@ -278,25 +299,20 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Logout
 app.post('/api/auth/logout', (req, res) => {
     req.session.destroy(err => {
         if (err) {
             console.error('Logout error:', err);
             return res.status(500).json({ message: 'Logout failed' });
         }
-        res.clearCookie('connect.sid'); // Clear session cookie
+        res.clearCookie('connect.sid'); // Clear the session cookie
         res.json({ message: 'Logout successful' });
     });
 });
 
-// Get Current User (Protected Route)
 app.get('/api/auth/user', requireAuth, (req, res) => {
-    // console.log("Current User Session:", req.session); // Debugging
     res.json({ user: req.session.user });
 });
-
-
 
 // --- Person Search and Retrieval Routes ---
 app.get('/api/persons/search', async (req, res) => {
@@ -333,11 +349,8 @@ app.get('/api/persons', async (req, res) => {
 });
 
 // --- Tracking Routes ---
-
-// Get tracked persons for the logged-in user
 app.get('/api/tracking', requireAuth, async (req, res) => {
     try {
-        // console.log("Tracking Session:", req.session); // Debugging
         const userId = req.session.user.id;
         const [rows] = await pool.execute(
             `SELECT ut.name,
@@ -348,9 +361,9 @@ app.get('/api/tracking', requireAuth, async (req, res) => {
                 ut.stopDate,
                 ut.startDate,
                 p.lastUpdated
-              FROM user_tracking ut
-              JOIN persons p ON ut.name = p.name
-              WHERE ut.user_id = ?`,
+             FROM user_tracking ut
+             JOIN persons p ON ut.name = p.name
+             WHERE ut.user_id = ?`,
             [userId]
         );
         res.json(rows);
@@ -360,7 +373,6 @@ app.get('/api/tracking', requireAuth, async (req, res) => {
     }
 });
 
-// Start/stop tracking a person
 app.post('/api/tracking/:name', requireAuth, async (req, res) => {
     const userId = req.session.user.id;
     const { name } = req.params;
@@ -374,9 +386,10 @@ app.post('/api/tracking/:name', requireAuth, async (req, res) => {
         }
 
         if (isTracking) {
+          // Use INSERT ... ON DUPLICATE KEY UPDATE to handle both starting and resuming tracking.
             await pool.execute(
                 `INSERT INTO user_tracking (user_id, name, startDate) VALUES (?, ?, NOW())
-                  ON DUPLICATE KEY UPDATE startDate = NOW(), stopDate = NULL`,
+                 ON DUPLICATE KEY UPDATE startDate = NOW(), stopDate = NULL`,
                 [userId, name]
             );
         } else {
@@ -394,106 +407,214 @@ app.post('/api/tracking/:name', requireAuth, async (req, res) => {
 });
 
 // --- Individual Onboarding Form Submission ---
-app.post('/api/registerIndividual', requireAuth, async (req, res) => { // Added requireAuth
+app.post('/api/registerIndividual', requireAuth, async (req, res) => {
     try {
-      const userId = req.session.user.id; // Get user ID from session
-      const {
-        fullName,
-        email,
-        residentStatus,
-        gender,
-        dateOfBirth,
-        nationality,
-        countryOfResidence,
-        otherNationalities,
-        specifiedOtherNationalities,
-        nationalIdNumber,
-        nationalIdExpiry,
-        passportNumber,
-        passportExpiry,
-        address,
-        state,
-        city,
-        zipCode,
-        contactNumber,
-        dialingCode,
-        workType,
-        industry,
-        productTypeOffered,
-        productOffered,
-        companyName,
-        positionInCompany
-      } = req.body;
-  
-      if (!fullName || !email) {
-        return res.status(400).json({ message: 'Full name and email are required' });
-      }
-  
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email)) {
-        return res.status(400).json({ message: 'Invalid email format' });
-      }
-  
-      const insertQuery = `
-        INSERT INTO individualob (
-            user_id, full_name, email, resident_status, gender, date_of_birth,
-            nationality, country_of_residence, other_nationalities,
-            specified_other_nationalities, national_id_number, national_id_expiry,
-            passport_number, passport_expiry, address, state, city, zip_code,
-            contact_number, dialing_code, work_type, industry,
-            product_type_offered, product_offered, company_name, position_in_company
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `; // Corrected: Only one VALUES clause
+        const userId = req.session.user.id; // Get the logged-in user's ID from the session
+        const {
+            fullName,
+            email,
+            residentStatus,
+            gender,
+            dateOfBirth,
+            nationality,
+            countryOfResidence,
+            otherNationalities,
+            specifiedOtherNationalities,
+            nationalIdNumber,
+            nationalIdExpiry,
+            passportNumber,
+            passportExpiry,
+            address,
+            state,
+            city,
+            zipCode,
+            contactNumber,
+            dialingCode,
+            workType,
+            industry,
+            productTypeOffered,
+            productOffered,
+            companyName,
+            positionInCompany
+        } = req.body;
 
-    const values = [
-        userId, // Add userId here
-        fullName,
-        email,
-        residentStatus,
-        gender,
-        dateOfBirth,
-        nationality,
-        countryOfResidence,
-        otherNationalities ? 1 : 0, // Convert boolean to TINYINT(1)
-        specifiedOtherNationalities,
-        nationalIdNumber,
-        nationalIdExpiry,
-        passportNumber,
-        passportExpiry,
-        address,
-        state,
-        city,
-        zipCode,
-        contactNumber,
-        dialingCode,
-        workType,
-        industry,
-        productTypeOffered,
-        productOffered,
-        companyName,
-        positionInCompany
-    ];
+        if (!fullName || !email) {
+            return res.status(400).json({ message: 'Full name and email are required' });
+        }
 
-    try {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ message: 'Invalid email format' });
+        }
+
+        // Crucial change: Add user_id to the query
+        const insertQuery = `
+            INSERT INTO individualob (
+                user_id, full_name, email, resident_status, gender, date_of_birth,
+                nationality, country_of_residence, other_nationalities,
+                specified_other_nationalities, national_id_number, national_id_expiry,
+                passport_number, passport_expiry, address, state, city, zip_code,
+                contact_number, dialing_code, work_type, industry,
+                product_type_offered, product_offered, company_name, position_in_company
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+
+        const values = [
+            userId, // Use the user ID from the session
+            fullName,
+            email,
+            residentStatus,
+            gender,
+            dateOfBirth,
+            nationality,
+            countryOfResidence,
+            otherNationalities ? 1 : 0, // Convert boolean to TINYINT(1)
+            specifiedOtherNationalities,
+            nationalIdNumber,
+            nationalIdExpiry,
+            passportNumber,
+            passportExpiry,
+            address,
+            state,
+            city,
+            zipCode,
+            contactNumber,
+            dialingCode,
+            workType,
+            industry,
+            productTypeOffered,
+            productOffered,
+            companyName,
+            positionInCompany
+        ];
+
+
         await pool.execute(insertQuery, values);
         res.status(201).json({ message: 'Individual registration successful' });
-    } catch (dbError) {
-        console.error('Database error:', dbError);
-        return res.status(500).json({ message: 'Database error during registration', error: dbError });
+
+    } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY') {
+            // Handle duplicate email error
+            return res.status(409).json({ message: 'Email already registered.' });
+        }
+        console.error('Error during individual registration:', error);
+        res.status(500).json({ message: 'Internal server error' });
     }
-  } catch (error) {
-    if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ message: 'Email already registered.' });
+});
+
+// --- Company Registration ---
+app.post('/api/registerCompany', requireAuth, async (req, res) => {
+    try {
+        const userId = req.session.user.id; // Get user ID from session
+        const {
+            companyName,
+            registrationNumber,
+            companyType,
+            incorporationDate,
+            businessNature,
+            industrySector,
+            annualTurnover,
+            employeeCount,
+            websiteUrl,
+            registeredAddress,
+            operatingAddress,
+            country,
+            state,
+            city,
+            postalCode,
+            contactPersonName,
+            contactEmail,
+            contactPhone,
+            taxNumber,
+            regulatoryLicenses
+        } = req.body;
+
+        if (!companyName || !contactEmail) {
+            return res.status(400).json({ message: 'Company name and contact email are required' });
+        }
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(contactEmail)) {
+            return res.status(400).json({ message: 'Invalid email format' });
+        }
+
+
+        // Crucial: Include user_id in the INSERT query
+        const insertQuery = `
+            INSERT INTO companyob (
+                user_id, company_name, registration_number, company_type,
+                incorporation_date, business_nature, industry_sector,
+                annual_turnover, employee_count, website_url,
+                registered_address, operating_address, country,
+                state, city, postal_code, contact_person_name,
+                contact_email, contact_phone, tax_number,
+                regulatory_licenses
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+
+        const values = [
+            userId, // Use the user ID from the session
+            companyName,
+            registrationNumber,
+            companyType,
+            incorporationDate,
+            businessNature,
+            industrySector,
+            annualTurnover,
+            employeeCount,
+            websiteUrl,
+            registeredAddress,
+            operatingAddress,
+            country,
+            state,
+            city,
+            postalCode,
+            contactPersonName,
+            contactEmail,
+            contactPhone,
+            taxNumber,
+            regulatoryLicenses
+        ];
+
+
+        await pool.execute(insertQuery, values);
+        res.status(201).json({ message: 'Company registration successful' });
+
+    } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY') {
+          return res.status(409).json({ message: 'Contact email already registered.' });
+        }
+        console.error('Error during company registration:', error);
+        res.status(500).json({ message: 'Internal server error' });
     }
-    console.error('Error during individual registration:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
 });
 
 
+// --- Get Individual Onboarding Data (for the logged-in user) ---
+app.get('/api/individualob', requireAuth, async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+        const [rows] = await pool.execute('SELECT * FROM individualob WHERE user_id = ?', [userId]);
+        res.json(rows);
+    } catch (error) {
+        console.error('Error fetching individual onboarding data:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// --- Get Company Onboarding Data (for the logged-in user) ---
+app.get('/api/companyob', requireAuth, async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+        const [rows] = await pool.execute('SELECT * FROM companyob WHERE user_id = ?', [userId]);
+        res.json(rows);
+    } catch (error) {
+        console.error('Error fetching company onboarding data:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 
 // --- Start Server ---
-
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+    console.log(`🚀 Server running on port ${port}`);
 });
