@@ -29,6 +29,11 @@ app.use(session({
     },
 }));
 
+app.get('/test', (req, res) => {
+    res.send('Test route is working!');
+});
+
+
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
