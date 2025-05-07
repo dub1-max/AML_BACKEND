@@ -11,7 +11,7 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 app.use(cors({
-    origin: 'http://localhost:5173',  // Replace with your frontend's origin
+    origin: 'http://137.184.150.6/',  // Replace with your frontend's origin
     credentials: true,
 }));
 
@@ -88,7 +88,7 @@ async function fetchAndPopulateData() {
 
                                 await pool.execute(
                                     'INSERT INTO persons (name, type, country, identifiers, riskLevel, sanctions, dataset, lastUpdated) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE type = VALUES(type), country = VALUES(country), identifiers = VALUES(identifiers), riskLevel = VALUES(riskLevel), sanctions = VALUES(sanctions), dataset = VALUES(dataset), lastUpdated = VALUES(lastUpdated)',
-                                    [row.name, getTypeFromDataset(url), row.countries || 'N/A', row.identifiers || 'N/A', calculateRiskLevel(url), row.sanctions ? JSON.stringify([row.sanctions]) : '[]', url, new Date().toISOString()]
+                                    [row.name, getTypeFromDataset(url), row.countries || 'N/A', row.identifiers || 'N/A', calculateRiskLevel(url), row.sanctions ? JSON.stringify([row.sanctions]) : '[]', url, new Date().toISOString().slice(0, 19).replace('T', ' ')]
                                 );
                             }
                             resolve();
