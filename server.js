@@ -401,9 +401,9 @@ app.post('/api/tracking/:name', requireAuth, async (req, res) => {
             );
         }
 
-        res.json({ message: `Tracking status updated for ${name}` });
+        res.status(200).json({ message: `Tracking ${isTracking ? 'started' : 'stopped'} for ${name}` });
     } catch (error) {
-        console.error('Error updating tracking status:', error);
+        console.error(`Error updating tracking for ${name}:`, error);
         res.status(500).json({ message: 'Internal server error' });
     }
 });
