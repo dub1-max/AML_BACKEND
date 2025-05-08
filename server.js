@@ -3,7 +3,7 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
 const Papa = require('papaparse');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const session = require('express-session');
 require('dotenv').config();
 
