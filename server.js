@@ -396,6 +396,48 @@ app.get('/api/auth/user', requireAuth, (req, res) => {
 });
 
 // --- Person Search and Retrieval Routes ---
+app.get('/api/persons', requireAuth, async (req, res) => {
+    try {
+        const { page = 1, limit = 50 } = req.query;
+        const startRow = (parseInt(page) - 1) * parseInt(limit) + 1;
+        const endRow = startRow + parseInt(limit) - 1;
+
+        // First get total count
+        const [countResult] = await pool.execute('SELECT COUNT(*) as total FROM persons');
+        const total = countResult[0].total;
+
+        // Then get paginated results using ROW_NUMBER
+        const query = `
+            WITH numbered_rows AS (
+                SELECT *, ROW_NUMBER() OVER (ORDER BY name) as row_num
+                FROM persons
+            )
+            SELECT * FROM numbered_rows 
+            WHERE row_num >= ? AND row_num <= ?`;
+
+        const [rows] = await pool.execute(query, [startRow, endRow]);
+        
+        // Clean up the response data
+        const cleanedRows = rows.map(row => {
+            const { row_num, ...rest } = row;
+            return rest;
+        });
+
+        res.json({
+            data: cleanedRows,
+            pagination: {
+                total,
+                page: parseInt(page),
+                totalPages: Math.ceil(total / parseInt(limit)),
+                limit: parseInt(limit)
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching persons:", error);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
 app.get('/api/persons/search', requireAuth, async (req, res) => {
     try {
         const { searchTerm, searchId, page = 1, limit = 50 } = req.query;
@@ -451,17 +493,6 @@ app.get('/api/persons/search', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error searching persons:', error);
         res.status(500).json({ error: 'Internal Server Error', details: error.message });
-    }
-});
-
-
-app.get('/api/persons', async (req, res) => {
-    try {
-        const [rows] = await pool.execute('SELECT * FROM persons');
-        res.json(rows);
-    } catch (error) {
-        console.error("Error fetching all persons:", error);
-        res.status(500).json({ error: "Internal Server Error" });
     }
 });
 
