@@ -399,7 +399,7 @@ app.get('/api/auth/user', requireAuth, (req, res) => {
 app.get('/api/persons/search', requireAuth, async (req, res) => {
     try {
         const { searchTerm, searchId, page = 1, limit = 50 } = req.query;
-        const offset = (page - 1) * limit;
+        const offset = (page - 1) * parseInt(limit);
         
         let query = 'SELECT SQL_CALC_FOUND_ROWS * FROM persons';
         const params = [];
@@ -409,8 +409,8 @@ app.get('/api/persons/search', requireAuth, async (req, res) => {
             query += ' WHERE 1=1';
             
             if (searchTerm) {
-                query += ' AND (name LIKE ? OR SOUNDEX(name) = SOUNDEX(?))';
-                params.push(`%${searchTerm}%`, searchTerm);
+                query += ' AND name LIKE ?';
+                params.push(`%${searchTerm}%`);
             }
             if (searchId) {
                 query += ' AND identifiers LIKE ?';
@@ -420,7 +420,7 @@ app.get('/api/persons/search', requireAuth, async (req, res) => {
         
         // Add pagination
         query += ' LIMIT ? OFFSET ?';
-        params.push(parseInt(limit), parseInt(offset));
+        params.push(Number(limit), Number(offset));
 
         console.log('Executing query:', query, 'with params:', params); // Debug log
 
