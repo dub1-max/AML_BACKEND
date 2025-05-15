@@ -409,18 +409,18 @@ app.get('/api/persons/search', requireAuth, async (req, res) => {
             query += ' WHERE 1=1';
             
             if (searchTerm) {
-                query += ' AND (LOWER(name) LIKE LOWER(?) OR SOUNDEX(name) = SOUNDEX(?))';
+                query += ' AND (name LIKE ? OR SOUNDEX(name) = SOUNDEX(?))';
                 params.push(`%${searchTerm}%`, searchTerm);
             }
             if (searchId) {
-                query += ' AND LOWER(identifiers) LIKE LOWER(?)';
+                query += ' AND identifiers LIKE ?';
                 params.push(`%${searchId}%`);
             }
         }
         
         // Add pagination
         query += ' LIMIT ? OFFSET ?';
-        params.push(Number(limit), Number(offset));
+        params.push(parseInt(limit), parseInt(offset));
 
         console.log('Executing query:', query, 'with params:', params); // Debug log
 
