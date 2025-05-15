@@ -399,7 +399,7 @@ app.get('/api/auth/user', requireAuth, (req, res) => {
 app.get('/api/persons/search', requireAuth, async (req, res) => {
     try {
         const { searchTerm, searchId, page = 1, limit = 50 } = req.query;
-        const offset = (page - 1) * parseInt(limit);
+        const offset = (page - 1) * Number(limit);
         
         let query = 'SELECT SQL_CALC_FOUND_ROWS * FROM persons';
         const params = [];
