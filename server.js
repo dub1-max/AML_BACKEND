@@ -399,44 +399,55 @@ app.get('/api/auth/user', requireAuth, (req, res) => {
 app.get('/api/persons/search', requireAuth, async (req, res) => {
     try {
         const { searchTerm, searchId, page = 1, limit = 50 } = req.query;
-        const offset = (page - 1) * parseInt(limit);
-                
-        let query = 'SELECT SQL_CALC_FOUND_ROWS * FROM persons';
-        const params = [];
-                
-        // Only add WHERE clause if we have search parameters
-        if (searchTerm || searchId) {
-            query += ' WHERE 1=1';
-                        
-            if (searchTerm) {
-                query += ' AND name LIKE ?';
-                params.push(`%${searchTerm}%`);
-            }
-            if (searchId) {
-                query += ' AND identifiers LIKE ?';
-                params.push(`%${searchId}%`);
-            }
-        }
-                
-        // Add pagination
-        query += ' LIMIT ? OFFSET ?';
-        params.push(parseInt(limit), parseInt(offset));
+        const startRow = (parseInt(page) - 1) * parseInt(limit) + 1;
+        const endRow = startRow + parseInt(limit) - 1;
         
+        let baseQuery = 'FROM persons WHERE 1=1';
+        const params = [];
+        
+        if (searchTerm) {
+            baseQuery += ' AND name LIKE ?';
+            params.push(`%${searchTerm}%`);
+        }
+        if (searchId) {
+            baseQuery += ' AND identifiers LIKE ?';
+            params.push(`%${searchId}%`);
+        }
+
+        // First get total count
+        const countQuery = `SELECT COUNT(*) as total ${baseQuery}`;
+        const [countResult] = await pool.execute(countQuery, params);
+        const total = countResult[0].total;
+
+        // Then get paginated results using ROW_NUMBER
+        const query = `
+            WITH numbered_rows AS (
+                SELECT *, ROW_NUMBER() OVER (ORDER BY name) as row_num
+                ${baseQuery}
+            )
+            SELECT * FROM numbered_rows 
+            WHERE row_num >= ? AND row_num <= ?`;
+
+        // Add pagination parameters
+        params.push(startRow, endRow);
+
         console.log('Executing query:', query, 'with params:', params);
         
         const [rows] = await pool.execute(query, params);
-        const [countResult] = await pool.execute('SELECT FOUND_ROWS() as total');
-                        
-        console.log('Search results:', rows.length, 'total:', countResult[0].total);
+        console.log('Search results:', rows.length, 'total:', total);
         
         res.json({
-            data: rows,
+            data: rows.map(row => {
+                const { row_num, ...rest } = row;
+                return rest;
+            }),
             pagination: {
-                total: countResult[0].total,
+                total,
                 page: parseInt(page),
-                totalPages: Math.ceil(countResult[0].total / parseInt(limit))
+                totalPages: Math.ceil(total / parseInt(limit))
             }
         });
+
     } catch (error) {
         console.error('Error searching persons:', error);
         res.status(500).json({ error: 'Internal Server Error', details: error.message });
