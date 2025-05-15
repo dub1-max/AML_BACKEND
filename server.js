@@ -5,13 +5,28 @@ const cors = require('cors');
 const Papa = require('papaparse');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
+const fetch = require('node-fetch');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3001;
 
+const ALLOWED_ORIGINS = [
+    'http://localhost:5173',
+    'http://137.184.150.6:5173'
+];
+
 app.use(cors({
-    origin: 'http://137.184.150.6:5173',  // Replace with your frontend's origin
+    origin: function(origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        if (ALLOWED_ORIGINS.indexOf(origin) === -1) {
+            var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+            return callback(new Error(msg), false);
+        }
+        return callback(null, true);
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
