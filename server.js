@@ -91,37 +91,75 @@ async function fetchAndPopulateData() {
                 console.error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
                 continue;
             }
+
+            // Get the response as text and process in chunks
             const text = await response.text();
-
-            await new Promise((resolve, reject) => {
-                Papa.parse(text, {
-                    header: true,
-                    skipEmptyLines: true,
-                    complete: async (results) => {
-                        try {
-                            const rows = results.data;
-                            for (const row of rows) {
-                                if (!row.name) continue;
-
-                                await pool.execute(
-                                    'INSERT INTO persons (name, type, country, identifiers, riskLevel, sanctions, dataset, lastUpdated) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE type = VALUES(type), country = VALUES(country), identifiers = VALUES(identifiers), riskLevel = VALUES(riskLevel), sanctions = VALUES(sanctions), dataset = VALUES(dataset), lastUpdated = VALUES(lastUpdated)',
-                                    [row.name, getTypeFromDataset(url), row.countries || 'N/A', row.identifiers || 'N/A', calculateRiskLevel(url), row.sanctions ? JSON.stringify([row.sanctions]) : '[]', url, new Date().toISOString().slice(0, 19).replace('T', ' ')]
-                                );
-                            }
-                            resolve();
-                        } catch (parseError) {
-                            reject(parseError);
-                        }
-                    },
-                    error: (error) => {
-                        reject(error);
-                    }
-                });
-            });
+            const chunkSize = 1024 * 1024; // 1MB chunks
+            
+            for (let i = 0; i < text.length; i += chunkSize) {
+                const chunk = text.slice(i, i + chunkSize);
+                await processDataChunk(chunk, url);
+            }
         }
         console.log('Data population complete.');
     } catch (error) {
         console.error('Error in fetchAndPopulateData:', error);
+    }
+}
+
+async function processDataChunk(chunk, url) {
+    return new Promise((resolve, reject) => {
+        Papa.parse(chunk, {
+            header: true,
+            skipEmptyLines: true,
+            complete: async (results) => {
+                try {
+                    const rows = results.data;
+                    // Process in smaller batches to prevent memory issues
+                    const batchSize = 100;
+                    for (let i = 0; i < rows.length; i += batchSize) {
+                        const batch = rows.slice(i, i + batchSize);
+                        await processBatch(batch, url);
+                    }
+                    resolve();
+                } catch (error) {
+                    reject(error);
+                }
+            },
+            error: (error) => reject(error)
+        });
+    });
+}
+
+async function processBatch(rows, url) {
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+        
+        for (const row of rows) {
+            if (!row.name) continue;
+
+            await connection.execute(
+                'INSERT INTO persons (name, type, country, identifiers, riskLevel, sanctions, dataset, lastUpdated) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE type = VALUES(type), country = VALUES(country), identifiers = VALUES(identifiers), riskLevel = VALUES(riskLevel), sanctions = VALUES(sanctions), dataset = VALUES(dataset), lastUpdated = VALUES(lastUpdated)',
+                [
+                    row.name,
+                    getTypeFromDataset(url),
+                    row.countries || 'N/A',
+                    row.identifiers || 'N/A',
+                    calculateRiskLevel(url),
+                    row.sanctions ? JSON.stringify([row.sanctions]) : '[]',
+                    url,
+                    new Date().toISOString().slice(0, 19).replace('T', ' ')
+                ]
+            );
+        }
+        
+        await connection.commit();
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
     }
 }
 
@@ -242,6 +280,32 @@ async function fetchAndPopulateData() {
         `);
         console.log("✅ companyob table ready.");
 
+        // Add index to improve query performance
+        try {
+            // Create indexes one by one with error handling
+            const createIndexQueries = [
+                'CREATE INDEX idx_persons_name ON persons(name)',
+                'CREATE INDEX idx_persons_identifiers ON persons(identifiers(255))',
+                'CREATE INDEX idx_user_tracking_user_id ON user_tracking(user_id)',
+                'CREATE INDEX idx_companyob_user_id ON companyob(user_id)',
+                'CREATE INDEX idx_individualob_user_id ON individualob(user_id)'
+            ];
+
+            for (const query of createIndexQueries) {
+                try {
+                    await pool.execute(query);
+                } catch (err) {
+                    // Ignore error if index already exists
+                    if (!err.message.includes('Duplicate')) {
+                        console.error(`Error creating index: ${err.message}`);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error("Error creating indexes:", error);
+            // Continue execution even if index creation fails
+        }
+
         await fetchAndPopulateData();
         setInterval(fetchAndPopulateData, UPDATE_INTERVAL);
 
@@ -332,26 +396,55 @@ app.get('/api/auth/user', requireAuth, (req, res) => {
 });
 
 // --- Person Search and Retrieval Routes ---
-app.get('/api/persons/search', async (req, res) => {
+app.get('/api/persons/search', requireAuth, async (req, res) => {
     try {
-        const { searchTerm, searchId } = req.query;
-        let query = 'SELECT * FROM persons WHERE 1=1';
+        const { searchTerm, searchId, page = 1, limit = 50 } = req.query;
+        const offset = (page - 1) * limit;
+        
+        let query = 'SELECT SQL_CALC_FOUND_ROWS * FROM persons';
         const params = [];
-
-        if (searchTerm) {
-            query += ' AND LOWER(name) LIKE LOWER(?)';
-            params.push(`%${searchTerm}%`);
+        
+        // Only add WHERE clause if we have search parameters
+        if (searchTerm || searchId) {
+            query += ' WHERE 1=1';
+            
+            if (searchTerm) {
+                query += ' AND (LOWER(name) LIKE LOWER(?) OR SOUNDEX(name) = SOUNDEX(?))';
+                params.push(`%${searchTerm}%`, searchTerm);
+            }
+            if (searchId) {
+                query += ' AND LOWER(identifiers) LIKE LOWER(?)';
+                params.push(`%${searchId}%`);
+            }
         }
-        if (searchId) {
-            query += ' AND LOWER(identifiers) LIKE LOWER(?)';
-            params.push(`%${searchId}%`);
-        }
+        
+        // Add pagination
+        query += ' LIMIT ? OFFSET ?';
+        params.push(Number(limit), Number(offset));
 
-        const [rows] = await pool.execute(query, params);
-        res.json(rows);
+        console.log('Executing query:', query, 'with params:', params); // Debug log
+
+        const connection = await pool.getConnection();
+        try {
+            const [rows] = await connection.execute(query, params);
+            const [countResult] = await connection.execute('SELECT FOUND_ROWS() as total');
+            
+            console.log('Search results:', rows.length, 'total:', countResult[0].total); // Debug log
+
+            res.json({
+                data: rows,
+                pagination: {
+                    total: countResult[0].total,
+                    page: Number(page),
+                    totalPages: Math.ceil(countResult[0].total / limit)
+                }
+            });
+        } finally {
+            connection.release();
+        }
     } catch (error) {
         console.error('Error searching persons:', error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        res.status(500).json({ error: 'Internal Server Error', details: error.message });
     }
 });
 
@@ -395,31 +488,83 @@ app.post('/api/tracking/:name', requireAuth, async (req, res) => {
     const { name } = req.params;
     const { isTracking } = req.body;
 
+    console.log('Tracking update request:', { userId, name, isTracking }); // Debug log
+
     try {
-        const [personExists] = await pool.execute('SELECT id FROM persons WHERE name = ?', [name]);
+        // First check if the person exists
+        const [personExists] = await pool.execute(
+            'SELECT id FROM persons WHERE name = ?',
+            [name]
+        );
+
         if (personExists.length === 0) {
             console.error(`Person not found: ${name}`);
             return res.status(404).json({ message: 'Person not found' });
         }
 
-        if (isTracking) {
-          // Use INSERT ... ON DUPLICATE KEY UPDATE to handle both starting and resuming tracking.
-            await pool.execute(
-                `INSERT INTO user_tracking (user_id, name, startDate) VALUES (?, ?, NOW())
-                 ON DUPLICATE KEY UPDATE startDate = NOW(), stopDate = NULL`,
-                [userId, name]
-            );
-        } else {
-            await pool.execute(
-                `UPDATE user_tracking SET stopDate = NOW() WHERE user_id = ? AND name = ?`,
-                [userId, name]
-            );
-        }
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
 
-        res.status(200).json({ message: `Tracking ${isTracking ? 'started' : 'stopped'} for ${name}` });
+            if (isTracking) {
+                // Start or resume tracking
+                await connection.execute(
+                    `INSERT INTO user_tracking (user_id, name, startDate) 
+                     VALUES (?, ?, NOW())
+                     ON DUPLICATE KEY UPDATE 
+                     startDate = CASE 
+                         WHEN stopDate IS NOT NULL THEN NOW() 
+                         ELSE startDate 
+                     END,
+                     stopDate = NULL`,
+                    [userId, name]
+                );
+            } else {
+                // Stop tracking
+                await connection.execute(
+                    `UPDATE user_tracking 
+                     SET stopDate = NOW() 
+                     WHERE user_id = ? AND name = ? AND stopDate IS NULL`,
+                    [userId, name]
+                );
+            }
+
+            await connection.commit();
+
+            // Fetch updated tracking status
+            const [updatedTracking] = await connection.execute(
+                `SELECT 
+                    name,
+                    CASE WHEN stopDate IS NULL THEN 1 ELSE 0 END as isTracking,
+                    startDate,
+                    stopDate
+                 FROM user_tracking
+                 WHERE user_id = ? AND name = ?`,
+                [userId, name]
+            );
+
+            res.json({
+                message: `Tracking ${isTracking ? 'started' : 'stopped'} for ${name}`,
+                tracking: updatedTracking[0] || {
+                    name,
+                    isTracking: false,
+                    startDate: null,
+                    stopDate: null
+                }
+            });
+
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
     } catch (error) {
         console.error(`Error updating tracking for ${name}:`, error);
-        res.status(500).json({ message: 'Internal server error' });
+        res.status(500).json({ 
+            message: 'Internal server error',
+            error: error.message 
+        });
     }
 });
 
@@ -630,6 +775,88 @@ app.get('/api/companyob', requireAuth, async (req, res) => {
     }
 });
 
+// Batch update status endpoint
+app.post('/api/batchUpdateStatus', requireAuth, async (req, res) => {
+    try {
+        const { updates } = req.body;
+        
+        if (!Array.isArray(updates)) {
+            return res.status(400).json({ message: 'Updates must be an array' });
+        }
+
+        // Start a transaction
+        const connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        try {
+            // Process all updates
+            for (const update of updates) {
+                const { type, name, status } = update;
+                
+                if (type === 'company') {
+                    await connection.query(
+                        'UPDATE companyob SET status = ? WHERE company_name = ?',
+                        [status, name]
+                    );
+                } else if (type === 'individual') {
+                    await connection.query(
+                        'UPDATE individualob SET status = ? WHERE full_name = ?',
+                        [status, name]
+                    );
+                }
+            }
+
+            // Commit the transaction
+            await connection.commit();
+            connection.release();
+            
+            res.json({ message: 'Batch update successful' });
+        } catch (error) {
+            // Rollback on error
+            await connection.rollback();
+            connection.release();
+            throw error;
+        }
+    } catch (error) {
+        console.error('Error in batch update:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Add caching middleware
+const cache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+function cacheMiddleware(key, duration = CACHE_DURATION) {
+    return (req, res, next) => {
+        const cacheKey = `${key}-${req.session?.user?.id || 'anonymous'}-${JSON.stringify(req.query)}`;
+        const cachedData = cache.get(cacheKey);
+        
+        if (cachedData && (Date.now() - cachedData.timestamp) < duration) {
+            return res.json(cachedData.data);
+        }
+        
+        res.originalJson = res.json;
+        res.json = (data) => {
+            cache.set(cacheKey, {
+                data,
+                timestamp: Date.now()
+            });
+            res.originalJson(data);
+        };
+        next();
+    };
+}
+
+// Add garbage collection helper
+function scheduleGC() {
+    if (global.gc) {
+        global.gc();
+    }
+}
+
+// Schedule periodic garbage collection
+setInterval(scheduleGC, 30000); // Run every 30 seconds
 
 // --- Start Server ---
 app.listen(port, () => {
