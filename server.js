@@ -949,6 +949,12 @@ app.post('/api/registerCompany', requireAuth, async (req, res) => {
             return res.status(409).json({ message: 'Contact email already registered.' });
         }
 
+        // Format and validate data
+        const formattedIncorporationDate = incorporationDate ? new Date(incorporationDate).toISOString().split('T')[0] : null;
+        // Convert numeric fields to proper format or null if invalid
+        const parsedAnnualTurnover = annualTurnover && !isNaN(parseFloat(annualTurnover)) ? parseFloat(annualTurnover) : null;
+        const parsedEmployeeCount = employeeCount && !isNaN(parseInt(employeeCount)) ? parseInt(employeeCount) : null;
+
         // Crucial: Include user_id in the INSERT query
         const insertQuery = `
             INSERT INTO companyob (
@@ -965,26 +971,36 @@ app.post('/api/registerCompany', requireAuth, async (req, res) => {
         const values = [
             userId, // Use the user ID from the session
             companyName,
-            registrationNumber,
-            companyType,
-            incorporationDate,
-            businessNature,
-            industrySector,
-            annualTurnover,
-            employeeCount,
-            websiteUrl,
-            registeredAddress,
-            operatingAddress,
-            country,
-            state,
-            city,
-            postalCode,
-            contactPersonName,
+            registrationNumber || null,
+            companyType || null,
+            formattedIncorporationDate,
+            businessNature || null,
+            industrySector || null,
+            parsedAnnualTurnover,
+            parsedEmployeeCount,
+            websiteUrl || null,
+            registeredAddress || null,
+            operatingAddress || null,
+            country || null,
+            state || null,
+            city || null,
+            postalCode || null,
+            contactPersonName || null,
             contactEmail,
-            contactPhone,
-            taxNumber,
-            regulatoryLicenses
+            contactPhone || null,
+            taxNumber || null,
+            regulatoryLicenses || null
         ];
+
+        console.log('Registering company with data:', { 
+            companyName, 
+            contactEmail, 
+            formattedIncorporationDate,
+            parsedAnnualTurnover,
+            parsedEmployeeCount,
+            country,
+            state
+        });
 
         // Use try-catch specifically for the database operation
         try {
@@ -994,12 +1010,20 @@ app.post('/api/registerCompany', requireAuth, async (req, res) => {
             if (dbError.code === 'ER_DUP_ENTRY') {
                 return res.status(409).json({ message: 'Contact email already registered.' });
             }
-            throw dbError; // Re-throw to be caught by the outer catch block
+            console.error('Database error during company registration:', dbError);
+            return res.status(500).json({ 
+                message: 'Database error during company registration', 
+                details: dbError.message,
+                code: dbError.code
+            });
         }
 
     } catch (error) {
         console.error('Error during company registration:', error);
-        res.status(500).json({ message: 'Internal server error during company registration', details: error.message });
+        res.status(500).json({ 
+            message: 'Internal server error during company registration', 
+            details: error.message
+        });
     }
 });
 
