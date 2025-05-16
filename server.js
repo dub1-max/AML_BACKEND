@@ -1482,7 +1482,17 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
         
         console.log(`Updating profile for ${originalName} with new name ${fullName}`);
         
-        // First, update the main persons table
+        // IMPORTANT: We need to update the user_tracking table FIRST to maintain referential integrity
+        // Update the user_tracking table if the name changed
+        if (originalName !== fullName) {
+            console.log(`Updating user_tracking references from ${originalName} to ${fullName}`);
+            await connection.execute(
+                'UPDATE user_tracking SET name = ? WHERE name = ?',
+                [fullName, originalName]
+            );
+        }
+        
+        // NOW we can update the main persons table
         await connection.execute(
             'UPDATE persons SET name = ?, identifiers = ?, country = ? WHERE id = ?',
             [fullName, nationalIdNumber, countryOfResidence, id]
@@ -1678,14 +1688,6 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
                     positionInCompany,
                     'approved' // Set as approved since it's coming from edit
                 ]
-            );
-        }
-        
-        // Update the user_tracking table if the name changed
-        if (originalName !== fullName) {
-            await connection.execute(
-                'UPDATE user_tracking SET name = ? WHERE name = ? AND user_id = ?',
-                [fullName, originalName, userId]
             );
         }
         
