@@ -1490,156 +1490,30 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
         
         console.log(`Updating profile for ${originalName} with new name ${fullName}`);
         
-        // IMPORTANT: We need to update the persons table FIRST to maintain referential integrity
-        // First update the main persons table to establish the new name reference
-        await connection.execute(
-            'UPDATE persons SET name = ?, identifiers = ?, country = ? WHERE id = ?',
-            [fullName, nationalIdNumber, countryOfResidence, id]
-        );
+        // Temporarily disable foreign key checks to allow updating the referenced row
+        await connection.execute('SET FOREIGN_KEY_CHECKS=0');
         
-        // Then update the user_tracking table references if the name changed
-        if (originalName !== fullName) {
-            console.log(`Updating user_tracking references from ${originalName} to ${fullName}`);
+        try {
+            // Update the main persons table first
             await connection.execute(
-                'UPDATE user_tracking SET name = ? WHERE name = ?',
-                [fullName, originalName]
+                'UPDATE persons SET name = ?, identifiers = ?, country = ? WHERE id = ?',
+                [fullName, nationalIdNumber, countryOfResidence, id]
             );
-        }
-        
-        // Store the edit in the edited_profiles table
-        await connection.execute(
-            `INSERT INTO edited_profiles (
-                profile_id,
-                original_name,
-                full_name,
-                email,
-                resident_status,
-                gender,
-                date_of_birth,
-                nationality,
-                country_of_residence,
-                other_nationalities,
-                specified_other_nationalities,
-                national_id_number,
-                national_id_expiry,
-                passport_number,
-                passport_expiry,
-                address,
-                state,
-                city,
-                zip_code,
-                contact_number,
-                dialing_code,
-                work_type,
-                industry,
-                product_type_offered,
-                product_offered,
-                company_name,
-                position_in_company,
-                edited_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                id,
-                originalName,
-                fullName,
-                email,
-                residentStatus,
-                gender,
-                dateOfBirth,
-                nationality,
-                countryOfResidence,
-                otherNationalities ? 1 : 0,
-                specifiedOtherNationalities,
-                nationalIdNumber,
-                nationalIdExpiry,
-                passportNumber,
-                passportExpiry,
-                address,
-                state,
-                city,
-                zipCode,
-                contactNumber,
-                dialingCode,
-                workType,
-                industry,
-                productTypeOffered,
-                productOffered,
-                companyName,
-                positionInCompany,
-                req.session.user.name || 'system'
-            ]
-        );
-        
-        // Check if there's an entry in individualob table
-        const [existingIndividuals] = await connection.execute(
-            'SELECT * FROM individualob WHERE full_name = ?',
-            [originalName]
-        );
-        
-        if (existingIndividuals.length > 0) {
-            // Update existing individualob record
+            
+            // Then update the user_tracking table references if the name changed
+            if (originalName !== fullName) {
+                console.log(`Updating user_tracking references from ${originalName} to ${fullName}`);
+                await connection.execute(
+                    'UPDATE user_tracking SET name = ? WHERE name = ?',
+                    [fullName, originalName]
+                );
+            }
+            
+            // Store the edit in the edited_profiles table
             await connection.execute(
-                `UPDATE individualob SET 
-                full_name = ?,
-                email = ?,
-                resident_status = ?,
-                gender = ?,
-                date_of_birth = ?,
-                nationality = ?,
-                country_of_residence = ?,
-                other_nationalities = ?,
-                specified_other_nationalities = ?,
-                national_id_number = ?,
-                national_id_expiry = ?,
-                passport_number = ?,
-                passport_expiry = ?,
-                address = ?,
-                state = ?,
-                city = ?,
-                zip_code = ?,
-                contact_number = ?,
-                dialing_code = ?,
-                work_type = ?,
-                industry = ?,
-                product_type_offered = ?,
-                product_offered = ?,
-                company_name = ?,
-                position_in_company = ?
-                WHERE full_name = ?`,
-                [
-                    fullName,
-                    email,
-                    residentStatus,
-                    gender,
-                    dateOfBirth,
-                    nationality,
-                    countryOfResidence,
-                    otherNationalities ? 1 : 0,
-                    specifiedOtherNationalities,
-                    nationalIdNumber,
-                    nationalIdExpiry,
-                    passportNumber,
-                    passportExpiry,
-                    address,
-                    state,
-                    city,
-                    zipCode,
-                    contactNumber,
-                    dialingCode,
-                    workType,
-                    industry,
-                    productTypeOffered,
-                    productOffered,
-                    companyName,
-                    positionInCompany,
-                    originalName
-                ]
-            );
-        } else {
-            // Insert new record in individualob table
-            await connection.execute(
-                `INSERT INTO individualob (
-                    user_id,
+                `INSERT INTO edited_profiles (
+                    profile_id,
+                    original_name,
                     full_name,
                     email,
                     resident_status,
@@ -1665,10 +1539,11 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
                     product_offered,
                     company_name,
                     position_in_company,
-                    status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    edited_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
-                    userId,
+                    id,
+                    originalName,
                     fullName,
                     email,
                     residentStatus,
@@ -1694,27 +1569,181 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
                     productOffered,
                     companyName,
                     positionInCompany,
-                    'approved' // Set as approved since it's coming from edit
+                    req.session.user.name || 'system'
                 ]
             );
+            
+            // Check if there's an entry in individualob table
+            const [existingIndividuals] = await connection.execute(
+                'SELECT * FROM individualob WHERE full_name = ?',
+                [originalName]
+            );
+            
+            if (existingIndividuals.length > 0) {
+                // Update existing individualob record
+                await connection.execute(
+                    `UPDATE individualob SET 
+                    full_name = ?,
+                    email = ?,
+                    resident_status = ?,
+                    gender = ?,
+                    date_of_birth = ?,
+                    nationality = ?,
+                    country_of_residence = ?,
+                    other_nationalities = ?,
+                    specified_other_nationalities = ?,
+                    national_id_number = ?,
+                    national_id_expiry = ?,
+                    passport_number = ?,
+                    passport_expiry = ?,
+                    address = ?,
+                    state = ?,
+                    city = ?,
+                    zip_code = ?,
+                    contact_number = ?,
+                    dialing_code = ?,
+                    work_type = ?,
+                    industry = ?,
+                    product_type_offered = ?,
+                    product_offered = ?,
+                    company_name = ?,
+                    position_in_company = ?
+                    WHERE full_name = ?`,
+                    [
+                        fullName,
+                        email,
+                        residentStatus,
+                        gender,
+                        dateOfBirth,
+                        nationality,
+                        countryOfResidence,
+                        otherNationalities ? 1 : 0,
+                        specifiedOtherNationalities,
+                        nationalIdNumber,
+                        nationalIdExpiry,
+                        passportNumber,
+                        passportExpiry,
+                        address,
+                        state,
+                        city,
+                        zipCode,
+                        contactNumber,
+                        dialingCode,
+                        workType,
+                        industry,
+                        productTypeOffered,
+                        productOffered,
+                        companyName,
+                        positionInCompany,
+                        originalName
+                    ]
+                );
+            } else {
+                // Insert new record in individualob table
+                await connection.execute(
+                    `INSERT INTO individualob (
+                        user_id,
+                        full_name,
+                        email,
+                        resident_status,
+                        gender,
+                        date_of_birth,
+                        nationality,
+                        country_of_residence,
+                        other_nationalities,
+                        specified_other_nationalities,
+                        national_id_number,
+                        national_id_expiry,
+                        passport_number,
+                        passport_expiry,
+                        address,
+                        state,
+                        city,
+                        zip_code,
+                        contact_number,
+                        dialing_code,
+                        work_type,
+                        industry,
+                        product_type_offered,
+                        product_offered,
+                        company_name,
+                        position_in_company,
+                        status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        userId,
+                        fullName,
+                        email,
+                        residentStatus,
+                        gender,
+                        dateOfBirth,
+                        nationality,
+                        countryOfResidence,
+                        otherNationalities ? 1 : 0,
+                        specifiedOtherNationalities,
+                        nationalIdNumber,
+                        nationalIdExpiry,
+                        passportNumber,
+                        passportExpiry,
+                        address,
+                        state,
+                        city,
+                        zipCode,
+                        contactNumber,
+                        dialingCode,
+                        workType,
+                        industry,
+                        productTypeOffered,
+                        productOffered,
+                        companyName,
+                        positionInCompany,
+                        'approved' // Set as approved since it's coming from edit
+                    ]
+                );
+            }
+            
+            await connection.commit();
+            
+            // Re-enable foreign key checks
+            await connection.execute('SET FOREIGN_KEY_CHECKS=1');
+            
+            return res.json({
+                success: true,
+                message: 'Profile updated successfully'
+            });
+        } catch (error) {
+            await connection.rollback();
+            console.error('Error updating profile:', error);
+            
+            // Make sure to re-enable foreign key checks even on error
+            try {
+                await connection.execute('SET FOREIGN_KEY_CHECKS=1');
+            } catch (fkError) {
+                console.error('Error re-enabling foreign key checks:', fkError);
+            }
+            
+            return res.status(500).json({
+                success: false,
+                message: 'Server error updating profile',
+                error: error.message
+            });
+        } finally {
+            // As a final safeguard, try to re-enable foreign key checks
+            try {
+                await connection.execute('SET FOREIGN_KEY_CHECKS=1');
+            } catch (e) {
+                // Just log the error, we're in finally block
+                console.error('Error in finally block re-enabling foreign key checks:', e);
+            }
+            connection.release();
         }
-        
-        await connection.commit();
-        
-        return res.json({
-            success: true,
-            message: 'Profile updated successfully'
-        });
     } catch (error) {
-        await connection.rollback();
         console.error('Error updating profile:', error);
         return res.status(500).json({
             success: false,
             message: 'Server error updating profile',
             error: error.message
         });
-    } finally {
-        connection.release();
     }
 });
 
