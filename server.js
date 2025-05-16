@@ -832,6 +832,22 @@ app.post('/api/registerIndividual', requireAuth, async (req, res) => {
             return res.status(400).json({ message: 'Invalid email format' });
         }
 
+        // Check if the email is already used by someone else
+        const [emailCheck] = await pool.execute(
+            'SELECT * FROM individualob WHERE email = ?',
+            [email]
+        );
+        
+        if (emailCheck.length > 0) {
+            // Email already exists for another user
+            await pool.execute('SET FOREIGN_KEY_CHECKS=1');
+            
+            return res.status(400).json({
+                success: false,
+                message: `Email ${email} is already in use by another profile. Please choose a different email.`
+            });
+        }
+        
         // Crucial change: Add user_id to the query
         const insertQuery = `
             INSERT INTO individualob (
@@ -1597,6 +1613,24 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
             );
             
             if (existingIndividuals.length > 0) {
+                // Check if the email is already used by someone else
+                const [emailCheck] = await connection.execute(
+                    'SELECT * FROM individualob WHERE email = ? AND full_name != ?',
+                    [email, originalName]
+                );
+                
+                if (emailCheck.length > 0) {
+                    // Email already exists for another user
+                    await connection.rollback();
+                    // Re-enable foreign key checks
+                    await connection.execute('SET FOREIGN_KEY_CHECKS=1');
+                    
+                    return res.status(400).json({
+                        success: false,
+                        message: `Email ${email} is already in use by another profile. Please choose a different email.`
+                    });
+                }
+                
                 // Update existing individualob record
                 await connection.execute(
                     `UPDATE individualob SET 
@@ -1656,6 +1690,24 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
                     ]
                 );
             } else {
+                // Check if the email is already used by someone else
+                const [emailCheck] = await connection.execute(
+                    'SELECT * FROM individualob WHERE email = ?',
+                    [email]
+                );
+                
+                if (emailCheck.length > 0) {
+                    // Email already exists for another user
+                    await connection.rollback();
+                    // Re-enable foreign key checks
+                    await connection.execute('SET FOREIGN_KEY_CHECKS=1');
+                    
+                    return res.status(400).json({
+                        success: false,
+                        message: `Email ${email} is already in use by another profile. Please choose a different email.`
+                    });
+                }
+                
                 // Insert new record in individualob table
                 await connection.execute(
                     `INSERT INTO individualob (
