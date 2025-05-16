@@ -28,7 +28,7 @@ app.use(cors({
         return callback(null, true);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept'],
     credentials: true,
 }));
 
@@ -500,6 +500,8 @@ app.get('/api/persons/search', requireAuth, async (req, res) => {
 app.get('/api/tracking', requireAuth, async (req, res) => {
     try {
         const userId = req.session.user.id;
+        console.log(`Fetching tracking data for user ${userId}`);
+        
         const [rows] = await pool.execute(
             `SELECT ut.name,
                 CASE
@@ -514,10 +516,72 @@ app.get('/api/tracking', requireAuth, async (req, res) => {
              WHERE ut.user_id = ?`,
             [userId]
         );
+        
+        console.log(`Found ${rows.length} tracked items for user ${userId}`);
         res.json(rows);
     } catch (error) {
         console.error('Error fetching tracked persons:', error);
         res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// New endpoint that returns tracked persons with complete details
+app.get('/api/tracked-persons', requireAuth, async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+        console.log(`Fetching tracked persons with details for user ${userId}`);
+
+        // Get tracked persons with their complete details in a single query
+        const [rows] = await pool.execute(
+            `SELECT p.*, 
+                CASE
+                    WHEN ut.stopDate IS NULL THEN 1
+                    ELSE 0
+                END as isTracking,
+                ut.stopDate,
+                ut.startDate
+             FROM user_tracking ut
+             JOIN persons p ON ut.name = p.name
+             WHERE ut.user_id = ?`,
+            [userId]
+        );
+
+        console.log(`Found ${rows.length} tracked persons with details for user ${userId}`);
+        
+        if (rows.length === 0) {
+            return res.json({ data: [] });
+        }
+
+        // Process the data to match the expected format
+        const processedData = rows.map(row => {
+            // Parse JSON fields if needed
+            let sanctions = [];
+            try {
+                sanctions = row.sanctions ? JSON.parse(row.sanctions) : [];
+            } catch (e) {
+                console.warn('Could not parse sanctions JSON:', e);
+            }
+
+            return {
+                id: row.id,
+                name: row.name,
+                type: row.type || 'Unknown',
+                country: row.country || 'Unknown',
+                identifiers: row.identifiers || 'N/A',
+                riskLevel: row.riskLevel || 50,
+                sanctions: sanctions,
+                dataset: row.dataset || '',
+                lastUpdated: row.lastUpdated,
+                isTracking: row.isTracking,
+                startDate: row.startDate,
+                stopDate: row.stopDate
+            };
+        });
+
+        res.json({ data: processedData });
+    } catch (error) {
+        console.error('Error fetching tracked persons with details:', error);
+        res.status(500).json({ message: 'Internal server error', error: error.message });
     }
 });
 
