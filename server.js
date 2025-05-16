@@ -1490,8 +1490,14 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
         
         console.log(`Updating profile for ${originalName} with new name ${fullName}`);
         
-        // IMPORTANT: We need to update the user_tracking table FIRST to maintain referential integrity
-        // Update the user_tracking table if the name changed
+        // IMPORTANT: We need to update the persons table FIRST to maintain referential integrity
+        // First update the main persons table to establish the new name reference
+        await connection.execute(
+            'UPDATE persons SET name = ?, identifiers = ?, country = ? WHERE id = ?',
+            [fullName, nationalIdNumber, countryOfResidence, id]
+        );
+        
+        // Then update the user_tracking table references if the name changed
         if (originalName !== fullName) {
             console.log(`Updating user_tracking references from ${originalName} to ${fullName}`);
             await connection.execute(
@@ -1499,12 +1505,6 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
                 [fullName, originalName]
             );
         }
-        
-        // NOW we can update the main persons table
-        await connection.execute(
-            'UPDATE persons SET name = ?, identifiers = ?, country = ? WHERE id = ?',
-            [fullName, nationalIdNumber, countryOfResidence, id]
-        );
         
         // Store the edit in the edited_profiles table
         await connection.execute(
