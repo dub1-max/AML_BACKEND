@@ -933,11 +933,21 @@ app.post('/api/registerCompany', requireAuth, async (req, res) => {
         if (!companyName || !contactEmail) {
             return res.status(400).json({ message: 'Company name and contact email are required' });
         }
+        
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(contactEmail)) {
             return res.status(400).json({ message: 'Invalid email format' });
         }
 
+        // Check if email already exists before attempting to insert
+        const [existingEmails] = await pool.execute(
+            'SELECT contact_email FROM companyob WHERE contact_email = ?',
+            [contactEmail]
+        );
+
+        if (existingEmails.length > 0) {
+            return res.status(409).json({ message: 'Contact email already registered.' });
+        }
 
         // Crucial: Include user_id in the INSERT query
         const insertQuery = `
@@ -976,16 +986,20 @@ app.post('/api/registerCompany', requireAuth, async (req, res) => {
             regulatoryLicenses
         ];
 
-
-        await pool.execute(insertQuery, values);
-        res.status(201).json({ message: 'Company registration successful' });
+        // Use try-catch specifically for the database operation
+        try {
+            await pool.execute(insertQuery, values);
+            res.status(201).json({ message: 'Company registration successful' });
+        } catch (dbError) {
+            if (dbError.code === 'ER_DUP_ENTRY') {
+                return res.status(409).json({ message: 'Contact email already registered.' });
+            }
+            throw dbError; // Re-throw to be caught by the outer catch block
+        }
 
     } catch (error) {
-        if (error.code === 'ER_DUP_ENTRY') {
-          return res.status(409).json({ message: 'Contact email already registered.' });
-        }
         console.error('Error during company registration:', error);
-        res.status(500).json({ message: 'Internal server error' });
+        res.status(500).json({ message: 'Internal server error during company registration', details: error.message });
     }
 });
 
