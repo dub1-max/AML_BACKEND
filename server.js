@@ -325,33 +325,41 @@ async function processBatch(rows, url) {
         // Create trigger for profile updates
         try {
             // First drop the trigger if it exists to avoid errors
-            await pool.execute("DROP TRIGGER IF EXISTS after_profile_update");
-            
-            // Then create the trigger
-            await pool.execute(`
-                CREATE TRIGGER after_profile_update
-                AFTER UPDATE ON persons
-                FOR EACH ROW
-                BEGIN
-                    IF OLD.name != NEW.name OR OLD.identifiers != NEW.identifiers THEN
-                        INSERT INTO edited_profiles (
-                            profile_id,
-                            original_name,
-                            full_name,
-                            email,
-                            edited_by
-                        )
-                        VALUES (
-                            NEW.id,
-                            OLD.name,
-                            NEW.name,
-                            '',
-                            USER()
-                        );
-                    END IF;
-                END
-            `);
-            console.log("✅ Profile update trigger ready.");
+            // Use direct query execution instead of prepared statements for triggers
+            const connection = await pool.getConnection();
+            try {
+                await connection.query("DROP TRIGGER IF EXISTS after_profile_update");
+                
+                // Then create the trigger
+                await connection.query(`
+                    CREATE TRIGGER after_profile_update
+                    AFTER UPDATE ON persons
+                    FOR EACH ROW
+                    BEGIN
+                        IF OLD.name != NEW.name OR OLD.identifiers != NEW.identifiers THEN
+                            INSERT INTO edited_profiles (
+                                profile_id,
+                                original_name,
+                                full_name,
+                                email,
+                                edited_by
+                            )
+                            VALUES (
+                                NEW.id,
+                                OLD.name,
+                                NEW.name,
+                                '',
+                                USER()
+                            );
+                        END IF;
+                    END
+                `);
+                console.log("✅ Profile update trigger ready.");
+            } catch (error) {
+                console.error("Error creating trigger:", error);
+            } finally {
+                connection.release();
+            }
         } catch (error) {
             console.error("Error creating trigger:", error);
         }
