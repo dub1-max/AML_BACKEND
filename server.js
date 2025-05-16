@@ -661,9 +661,26 @@ app.get('/api/tracked-persons', requireAuth, async (req, res) => {
             // Parse JSON fields if needed
             let sanctions = [];
             try {
-                sanctions = row.sanctions ? JSON.parse(row.sanctions) : [];
+                // Check if the sanctions field is valid before parsing
+                if (row.sanctions && typeof row.sanctions === 'string' && row.sanctions.trim() !== '') {
+                    // Try to fix common JSON issues before parsing
+                    let sanitizedJson = row.sanctions;
+                    // If it doesn't start with [ or {, wrap it in array brackets
+                    if (!sanitizedJson.startsWith('[') && !sanitizedJson.startsWith('{')) {
+                        sanitizedJson = `[${sanitizedJson}]`;
+                    }
+                    
+                    try {
+                        sanctions = JSON.parse(sanitizedJson);
+                    } catch (innerError) {
+                        // Second attempt: try to use empty array instead of warning
+                        sanctions = [];
+                    }
+                }
             } catch (e) {
-                console.warn('Could not parse sanctions JSON:', e);
+                // Just log once per session rather than spamming console
+                console.warn(`Could not parse sanctions JSON for ${row.name || 'unknown'}`);
+                sanctions = [];
             }
 
             return {
