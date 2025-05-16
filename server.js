@@ -282,6 +282,80 @@ async function processBatch(rows, url) {
         `);
         console.log("✅ companyob table ready.");
 
+        // Create edited_profiles table to store profile edit history
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS edited_profiles (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                profile_id INT NOT NULL,
+                original_name VARCHAR(255),
+                full_name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                resident_status VARCHAR(50),
+                gender VARCHAR(20),
+                date_of_birth DATE,
+                nationality VARCHAR(3),
+                country_of_residence VARCHAR(3),
+                other_nationalities BOOLEAN DEFAULT FALSE,
+                specified_other_nationalities VARCHAR(3),
+                national_id_number VARCHAR(100),
+                national_id_expiry DATE,
+                passport_number VARCHAR(100),
+                passport_expiry DATE,
+                address TEXT,
+                state VARCHAR(100),
+                city VARCHAR(100),
+                zip_code VARCHAR(20),
+                contact_number VARCHAR(50),
+                dialing_code VARCHAR(10),
+                work_type VARCHAR(50),
+                industry VARCHAR(100),
+                product_type_offered VARCHAR(50),
+                product_offered VARCHAR(255),
+                company_name VARCHAR(255),
+                position_in_company VARCHAR(100),
+                edited_by VARCHAR(100),
+                edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_profile_id (profile_id),
+                INDEX idx_original_name (original_name),
+                INDEX idx_edited_at (edited_at)
+            )
+        `);
+        console.log("✅ edited_profiles table ready.");
+
+        // Create trigger for profile updates
+        try {
+            // First drop the trigger if it exists to avoid errors
+            await pool.execute("DROP TRIGGER IF EXISTS after_profile_update");
+            
+            // Then create the trigger
+            await pool.execute(`
+                CREATE TRIGGER after_profile_update
+                AFTER UPDATE ON persons
+                FOR EACH ROW
+                BEGIN
+                    IF OLD.name != NEW.name OR OLD.identifiers != NEW.identifiers THEN
+                        INSERT INTO edited_profiles (
+                            profile_id,
+                            original_name,
+                            full_name,
+                            email,
+                            edited_by
+                        )
+                        VALUES (
+                            NEW.id,
+                            OLD.name,
+                            NEW.name,
+                            '',
+                            USER()
+                        );
+                    END IF;
+                END
+            `);
+            console.log("✅ Profile update trigger ready.");
+        } catch (error) {
+            console.error("Error creating trigger:", error);
+        }
+
         // Add index to improve query performance
         try {
             // Create indexes one by one with error handling
@@ -1291,6 +1365,346 @@ app.post('/api/mark-matched/:id', requireAuth, async (req, res) => {
             message: 'Server error while marking person as matched',
             error: error.message 
         });
+    }
+});
+
+// --- Profile Routes ---
+app.get('/api/profile/:id', requireAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // First try to get data from persons table
+        const [persons] = await pool.execute(
+            'SELECT * FROM persons WHERE id = ?',
+            [id]
+        );
+        
+        if (persons.length === 0) {
+            return res.status(404).json({ message: 'Profile not found' });
+        }
+        
+        const person = persons[0];
+        
+        // Check if this person has extended profile info in individualob table
+        const [individuals] = await pool.execute(
+            'SELECT * FROM individualob WHERE full_name = ?',
+            [person.name]
+        );
+        
+        let profile = {
+            id: person.id,
+            name: person.name,
+            fullName: person.name,
+            identifiers: person.identifiers,
+            type: person.type,
+            country: person.country,
+            riskLevel: person.riskLevel,
+            dataset: person.dataset
+        };
+        
+        // If found in individualob, add those fields
+        if (individuals.length > 0) {
+            const individual = individuals[0];
+            
+            // Merge individual data into profile
+            profile = {
+                ...profile,
+                email: individual.email,
+                residentStatus: individual.resident_status,
+                gender: individual.gender,
+                dateOfBirth: individual.date_of_birth,
+                nationality: individual.nationality,
+                countryOfResidence: individual.country_of_residence,
+                otherNationalities: individual.other_nationalities === 1,
+                specifiedOtherNationalities: individual.specified_other_nationalities,
+                nationalIdNumber: individual.national_id_number || person.identifiers,
+                nationalIdExpiry: individual.national_id_expiry,
+                passportNumber: individual.passport_number,
+                passportExpiry: individual.passport_expiry,
+                address: individual.address,
+                state: individual.state,
+                city: individual.city,
+                zipCode: individual.zip_code,
+                contactNumber: individual.contact_number,
+                dialingCode: individual.dialing_code,
+                workType: individual.work_type,
+                industry: individual.industry,
+                productTypeOffered: individual.product_type_offered,
+                productOffered: individual.product_offered,
+                companyName: individual.company_name,
+                positionInCompany: individual.position_in_company
+            };
+        }
+        
+        return res.json(profile);
+    } catch (error) {
+        console.error('Error fetching profile:', error);
+        return res.status(500).json({ message: 'Server error' });
+    }
+});
+
+app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
+    const connection = await pool.getConnection();
+    
+    try {
+        await connection.beginTransaction();
+        
+        const { id } = req.params;
+        const userId = req.session.user.id;
+        const {
+            originalName,
+            fullName,
+            email,
+            residentStatus,
+            gender,
+            dateOfBirth,
+            nationality,
+            countryOfResidence,
+            otherNationalities,
+            specifiedOtherNationalities,
+            nationalIdNumber,
+            nationalIdExpiry,
+            passportNumber,
+            passportExpiry,
+            address,
+            state,
+            city,
+            zipCode,
+            contactNumber,
+            dialingCode,
+            workType,
+            industry,
+            productTypeOffered,
+            productOffered,
+            companyName,
+            positionInCompany
+        } = req.body;
+        
+        console.log(`Updating profile for ${originalName} with new name ${fullName}`);
+        
+        // First, update the main persons table
+        await connection.execute(
+            'UPDATE persons SET name = ?, identifiers = ?, country = ? WHERE id = ?',
+            [fullName, nationalIdNumber, countryOfResidence, id]
+        );
+        
+        // Store the edit in the edited_profiles table
+        await connection.execute(
+            `INSERT INTO edited_profiles (
+                profile_id,
+                original_name,
+                full_name,
+                email,
+                resident_status,
+                gender,
+                date_of_birth,
+                nationality,
+                country_of_residence,
+                other_nationalities,
+                specified_other_nationalities,
+                national_id_number,
+                national_id_expiry,
+                passport_number,
+                passport_expiry,
+                address,
+                state,
+                city,
+                zip_code,
+                contact_number,
+                dialing_code,
+                work_type,
+                industry,
+                product_type_offered,
+                product_offered,
+                company_name,
+                position_in_company,
+                edited_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                id,
+                originalName,
+                fullName,
+                email,
+                residentStatus,
+                gender,
+                dateOfBirth,
+                nationality,
+                countryOfResidence,
+                otherNationalities ? 1 : 0,
+                specifiedOtherNationalities,
+                nationalIdNumber,
+                nationalIdExpiry,
+                passportNumber,
+                passportExpiry,
+                address,
+                state,
+                city,
+                zipCode,
+                contactNumber,
+                dialingCode,
+                workType,
+                industry,
+                productTypeOffered,
+                productOffered,
+                companyName,
+                positionInCompany,
+                req.session.user.name || 'system'
+            ]
+        );
+        
+        // Check if there's an entry in individualob table
+        const [existingIndividuals] = await connection.execute(
+            'SELECT * FROM individualob WHERE full_name = ?',
+            [originalName]
+        );
+        
+        if (existingIndividuals.length > 0) {
+            // Update existing individualob record
+            await connection.execute(
+                `UPDATE individualob SET 
+                full_name = ?,
+                email = ?,
+                resident_status = ?,
+                gender = ?,
+                date_of_birth = ?,
+                nationality = ?,
+                country_of_residence = ?,
+                other_nationalities = ?,
+                specified_other_nationalities = ?,
+                national_id_number = ?,
+                national_id_expiry = ?,
+                passport_number = ?,
+                passport_expiry = ?,
+                address = ?,
+                state = ?,
+                city = ?,
+                zip_code = ?,
+                contact_number = ?,
+                dialing_code = ?,
+                work_type = ?,
+                industry = ?,
+                product_type_offered = ?,
+                product_offered = ?,
+                company_name = ?,
+                position_in_company = ?
+                WHERE full_name = ?`,
+                [
+                    fullName,
+                    email,
+                    residentStatus,
+                    gender,
+                    dateOfBirth,
+                    nationality,
+                    countryOfResidence,
+                    otherNationalities ? 1 : 0,
+                    specifiedOtherNationalities,
+                    nationalIdNumber,
+                    nationalIdExpiry,
+                    passportNumber,
+                    passportExpiry,
+                    address,
+                    state,
+                    city,
+                    zipCode,
+                    contactNumber,
+                    dialingCode,
+                    workType,
+                    industry,
+                    productTypeOffered,
+                    productOffered,
+                    companyName,
+                    positionInCompany,
+                    originalName
+                ]
+            );
+        } else {
+            // Insert new record in individualob table
+            await connection.execute(
+                `INSERT INTO individualob (
+                    user_id,
+                    full_name,
+                    email,
+                    resident_status,
+                    gender,
+                    date_of_birth,
+                    nationality,
+                    country_of_residence,
+                    other_nationalities,
+                    specified_other_nationalities,
+                    national_id_number,
+                    national_id_expiry,
+                    passport_number,
+                    passport_expiry,
+                    address,
+                    state,
+                    city,
+                    zip_code,
+                    contact_number,
+                    dialing_code,
+                    work_type,
+                    industry,
+                    product_type_offered,
+                    product_offered,
+                    company_name,
+                    position_in_company,
+                    status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    userId,
+                    fullName,
+                    email,
+                    residentStatus,
+                    gender,
+                    dateOfBirth,
+                    nationality,
+                    countryOfResidence,
+                    otherNationalities ? 1 : 0,
+                    specifiedOtherNationalities,
+                    nationalIdNumber,
+                    nationalIdExpiry,
+                    passportNumber,
+                    passportExpiry,
+                    address,
+                    state,
+                    city,
+                    zipCode,
+                    contactNumber,
+                    dialingCode,
+                    workType,
+                    industry,
+                    productTypeOffered,
+                    productOffered,
+                    companyName,
+                    positionInCompany,
+                    'approved' // Set as approved since it's coming from edit
+                ]
+            );
+        }
+        
+        // Update the user_tracking table if the name changed
+        if (originalName !== fullName) {
+            await connection.execute(
+                'UPDATE user_tracking SET name = ? WHERE name = ? AND user_id = ?',
+                [fullName, originalName, userId]
+            );
+        }
+        
+        await connection.commit();
+        
+        return res.json({
+            success: true,
+            message: 'Profile updated successfully'
+        });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error updating profile:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Server error updating profile',
+            error: error.message
+        });
+    } finally {
+        connection.release();
     }
 });
 
