@@ -243,6 +243,7 @@ async function processBatch(rows, url) {
                 product_offered VARCHAR(255),
                 company_name VARCHAR(255),
                 position_in_company VARCHAR(255),
+                status VARCHAR(50) DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
@@ -274,6 +275,7 @@ async function processBatch(rows, url) {
                 contact_phone VARCHAR(50),
                 tax_number VARCHAR(100),
                 regulatory_licenses TEXT,
+                status VARCHAR(50) DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
@@ -304,6 +306,26 @@ async function processBatch(rows, url) {
         } catch (error) {
             console.error("Error creating indexes:", error);
             // Continue execution even if index creation fails
+        }
+
+        // Add status column to existing tables if it doesn't exist
+        try {
+            // Check if the status column exists in individualob
+            const [indColumns] = await pool.execute("SHOW COLUMNS FROM individualob LIKE 'status'");
+            if (indColumns.length === 0) {
+                console.log("Adding status column to individualob table");
+                await pool.execute("ALTER TABLE individualob ADD COLUMN status VARCHAR(50) DEFAULT 'pending'");
+            }
+
+            // Check if the status column exists in companyob
+            const [compColumns] = await pool.execute("SHOW COLUMNS FROM companyob LIKE 'status'");
+            if (compColumns.length === 0) {
+                console.log("Adding status column to companyob table");
+                await pool.execute("ALTER TABLE companyob ADD COLUMN status VARCHAR(50) DEFAULT 'pending'");
+            }
+        } catch (error) {
+            console.error("Error adding status columns:", error);
+            // Continue execution even if column addition fails
         }
 
         await fetchAndPopulateData();
@@ -925,6 +947,82 @@ app.post('/api/batchUpdateStatus', requireAuth, async (req, res) => {
     }
 });
 
+// --- Name Match Check Endpoint ---
+app.get('/api/check-name-match/:name', requireAuth, async (req, res) => {
+    const { name } = req.params;
+    
+    if (!name || name.trim().length < 2) {
+        return res.status(400).json({ 
+            matched: false, 
+            message: 'Name must be at least 2 characters long'
+        });
+    }
+    
+    console.log(`Checking name match for: "${name}"`);
+    
+    try {
+        // First check for exact matches
+        const [exactMatches] = await pool.execute(
+            'SELECT * FROM persons WHERE name = ?',
+            [name]
+        );
+        
+        if (exactMatches.length > 0) {
+            console.log(`Found exact match for "${name}"`);
+            return res.json({ 
+                matched: true, 
+                matches: exactMatches,
+                matchType: 'exact'
+            });
+        }
+        
+        // Check for partial matches (name contains the search term or vice versa)
+        const nameParts = name.toLowerCase().split(/\s+/);
+        
+        // Generate SQL for matching any part of the name
+        let sqlQuery = 'SELECT * FROM persons WHERE ';
+        const conditions = [];
+        const params = [];
+        
+        // Add condition for the full name as a partial match
+        conditions.push('LOWER(name) LIKE ?');
+        params.push(`%${name.toLowerCase()}%`);
+        
+        // Add conditions for individual name parts
+        nameParts.forEach(part => {
+            if (part.length >= 3) { // Only use parts that are at least 3 chars
+                conditions.push('LOWER(name) LIKE ?');
+                params.push(`%${part}%`);
+            }
+        });
+        
+        sqlQuery += conditions.join(' OR ');
+        sqlQuery += ' LIMIT 10'; // Limit results to prevent performance issues
+        
+        const [partialMatches] = await pool.execute(sqlQuery, params);
+        
+        if (partialMatches.length > 0) {
+            console.log(`Found ${partialMatches.length} partial matches for "${name}"`);
+            return res.json({ 
+                matched: true, 
+                matches: partialMatches,
+                matchType: 'partial'
+            });
+        }
+        
+        console.log(`No matches found for "${name}"`);
+        return res.json({ matched: false });
+        
+    } catch (error) {
+        console.error('Error checking name match:', error);
+        res.status(500).json({ 
+            matched: false, 
+            message: 'Error checking name match',
+            error: error.message
+        });
+    }
+});
+
 // Add caching middleware
 const cache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
@@ -959,6 +1057,210 @@ function scheduleGC() {
 
 // Schedule periodic garbage collection
 setInterval(scheduleGC, 30000); // Run every 30 seconds
+
+// --- Customer Approval/Rejection Routes ---
+app.post('/api/customer/:type/:id/:action', requireAuth, async (req, res) => {
+    const { type, id, action } = req.params;
+    const userId = req.session.user.id;
+    
+    console.log(`Processing ${action} for ${type} with id ${id} by user ${userId}`);
+    
+    if (!['individual', 'company'].includes(type)) {
+        return res.status(400).json({ message: 'Invalid customer type' });
+    }
+    
+    if (!['approve', 'reject', 'process-complete'].includes(action)) {
+        return res.status(400).json({ message: 'Invalid action' });
+    }
+    
+    const connection = await pool.getConnection();
+    
+    try {
+        await connection.beginTransaction();
+        
+        if (action === 'process-complete') {
+            // Mark the customer as processed
+            const table = type === 'individual' ? 'individualob' : 'companyob';
+            console.log(`Marking ${type} with id ${id} as processed`);
+            
+            const [result] = await connection.execute(
+                `UPDATE ${table} SET status = 'processed' WHERE id = ? AND user_id = ?`, 
+                [id, userId]
+            );
+            
+            console.log('Update operation result:', result);
+            
+            await connection.commit();
+            return res.json({ message: `${type} customer marked as processed` });
+        } else if (action === 'reject') {
+            // Update the customer status to rejected instead of deleting
+            try {
+                const table = type === 'individual' ? 'individualob' : 'companyob';
+                const nameField = type === 'individual' ? 'full_name' : 'company_name';
+                
+                console.log(`Rejecting ${type} with id ${id} for user ${userId}`);
+                
+                // First get the customer name before updating
+                const [customerRows] = await connection.execute(
+                    `SELECT ${nameField} as name FROM ${table} WHERE id = ?`, 
+                    [id]
+                );
+                
+                if (customerRows.length === 0) {
+                    await connection.rollback();
+                    return res.status(404).json({ message: `${type} with ID ${id} not found` });
+                }
+                
+                const customerName = customerRows[0].name;
+                console.log(`Found customer to reject: ${customerName}`);
+                
+                // Update status to rejected
+                const [updateResult] = await connection.execute(
+                    `UPDATE ${table} SET status = 'rejected' WHERE id = ? AND user_id = ?`, 
+                    [id, userId]
+                );
+                
+                console.log('Update operation result:', updateResult);
+                
+                if (updateResult.affectedRows === 0) {
+                    await connection.rollback();
+                    return res.status(400).json({ 
+                        message: `Failed to update ${type} status. No rows affected.`,
+                        details: updateResult
+                    });
+                }
+                
+                // Remove from tracking if they were added
+                const [trackingResult] = await connection.execute(
+                    `UPDATE user_tracking SET stopDate = NOW() 
+                     WHERE user_id = ? AND name = ? AND stopDate IS NULL`,
+                    [userId, customerName]
+                );
+                
+                console.log(`Tracking update result for ${customerName}:`, trackingResult);
+                
+                await connection.commit();
+                
+                return res.json({ 
+                    message: `${type} customer rejected successfully`,
+                    name: customerName,
+                    id: id,
+                    status: 'rejected'
+                });
+            } catch (error) {
+                await connection.rollback();
+                console.error(`Error rejecting ${type} with ID ${id}:`, error);
+                return res.status(500).json({ 
+                    message: `Server error while rejecting ${type}`,
+                    error: error.message 
+                });
+            }
+        } else if (action === 'approve') {
+            // For approval, we need to get the customer name first
+            const table = type === 'individual' ? 'individualob' : 'companyob';
+            const nameField = type === 'individual' ? 'full_name' : 'company_name';
+            
+            console.log(`Looking up ${nameField} from ${table} where id = ${id}`);
+            const [rows] = await connection.execute(
+                `SELECT * FROM ${table} WHERE id = ?`, 
+                [id]
+            );
+            
+            console.log('Customer lookup result:', rows);
+            
+            if (rows.length === 0) {
+                await connection.rollback();
+                return res.status(404).json({ message: 'Customer not found' });
+            }
+            
+            const customerData = rows[0];
+            const customerName = type === 'individual' ? customerData.full_name : customerData.company_name;
+            console.log(`Found customer name: ${customerName}`);
+            
+            // Check if this name exists in the persons table
+            const [personExists] = await connection.execute(
+                'SELECT id FROM persons WHERE name = ?',
+                [customerName]
+            );
+            
+            console.log('Person exists in sanctions check:', personExists.length > 0);
+            
+            // If the customer doesn't exist in the persons table, add them
+            if (personExists.length === 0) {
+                console.log(`Customer ${customerName} not found in persons table. Adding them...`);
+                
+                // Prepare data for persons table
+                const countryField = type === 'individual' ? 'nationality' : 'country';
+                const country = customerData[countryField] || 'Unknown';
+                
+                const identifiers = type === 'individual' 
+                    ? `ID: ${customerData.national_id_number || 'N/A'}, Passport: ${customerData.passport_number || 'N/A'}`
+                    : `Reg: ${customerData.registration_number || 'N/A'}, Tax: ${customerData.tax_number || 'N/A'}`;
+                
+                // Insert the customer into the persons table
+                await connection.execute(
+                    'INSERT INTO persons (name, type, country, identifiers, riskLevel, sanctions, dataset, lastUpdated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    [
+                        customerName,
+                        type === 'individual' ? 'Individual' : 'Company',
+                        country,
+                        identifiers,
+                        30, // Default low risk level
+                        '[]', // Empty sanctions array
+                        'onboarded', // Mark as onboarded in dataset
+                        new Date().toISOString().slice(0, 19).replace('T', ' ')
+                    ]
+                );
+                
+                console.log(`Added ${customerName} to persons table`);
+            }
+            
+            // Check if the customer is already in tracking
+            const [existingTracking] = await connection.execute(
+                'SELECT * FROM user_tracking WHERE user_id = ? AND name = ?',
+                [userId, customerName]
+            );
+            
+            console.log('Current tracking status:', existingTracking.length > 0 ? 'being tracked' : 'not tracked');
+            
+            if (existingTracking.length === 0) {
+                // Add to tracking if not already there
+                console.log(`Adding ${customerName} to tracking for user ${userId}`);
+                await connection.execute(
+                    'INSERT INTO user_tracking (user_id, name, startDate) VALUES (?, ?, NOW())',
+                    [userId, customerName]
+                );
+            } else {
+                // Update tracking if already exists
+                console.log(`Updating tracking for ${customerName}`);
+                await connection.execute(
+                    'UPDATE user_tracking SET stopDate = NULL, startDate = COALESCE(startDate, NOW()) WHERE user_id = ? AND name = ?',
+                    [userId, customerName]
+                );
+            }
+            
+            // We keep the customer in the individualob/companyob table
+            // but mark them as approved
+            console.log(`Marking ${type} customer as approved`);
+            await connection.execute(
+                `UPDATE ${table} SET status = 'approved' WHERE id = ?`,
+                [id]
+            );
+            
+            await connection.commit();
+            return res.json({ 
+                message: `${type} customer approved and added to tracking`,
+                name: customerName
+            });
+        }
+    } catch (error) {
+        await connection.rollback();
+        console.error(`Error handling ${action} for ${type} customer:`, error);
+        res.status(500).json({ message: 'Server error', error: error.message });
+    } finally {
+        connection.release();
+    }
+});
 
 // --- Start Server ---
 app.listen(port, () => {
