@@ -1262,6 +1262,38 @@ app.post('/api/customer/:type/:id/:action', requireAuth, async (req, res) => {
     }
 });
 
+// --- Mark a person as matched (blacklisted) ---
+app.post('/api/mark-matched/:id', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    const { dataset = 'matched' } = req.body;
+    
+    try {
+        console.log(`Marking person ${id} as matched/blacklisted`);
+        
+        // Update the dataset field in the persons table
+        const [result] = await pool.execute(
+            'UPDATE persons SET dataset = ? WHERE id = ?',
+            [dataset, id]
+        );
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Person not found' });
+        }
+        
+        console.log(`Successfully marked person ${id} as ${dataset}`);
+        return res.json({ 
+            message: `Person with ID ${id} has been marked as ${dataset}`,
+            success: true
+        });
+    } catch (error) {
+        console.error(`Error marking person ${id} as matched:`, error);
+        return res.status(500).json({ 
+            message: 'Server error while marking person as matched',
+            error: error.message 
+        });
+    }
+});
+
 // --- Start Server ---
 app.listen(port, () => {
     console.log(`🚀 Server running on port ${port}`);
