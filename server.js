@@ -2006,30 +2006,46 @@ app.get('/credits', requireAuth, async (req, res) => {
     try {
         const userId = req.session.user.id;
         console.log('Fetching credits for user:', userId);
+        console.log('Session user data:', req.session.user);
 
+        // First verify the user exists and get their credits
         const [userRows] = await pool.execute(
-            'SELECT credits FROM users WHERE id = ?',
+            'SELECT id, email, name, credits FROM users WHERE id = ?',
             [userId]
         );
 
         if (userRows.length === 0) {
-            console.log('User not found:', userId);
+            console.log('User not found in database:', userId);
             return res.status(404).json({ message: 'User not found' });
         }
 
-        console.log('User credits found:', userRows[0].credits);
+        const user = userRows[0];
+        console.log('Raw user data from database:', user);
+        console.log('Raw credits value:', user.credits);
 
+        // Ensure credits is a number
+        let credits = 0;
+        if (user.credits !== null && user.credits !== undefined) {
+            credits = parseInt(user.credits);
+            if (isNaN(credits)) {
+                console.log('Credits is NaN, defaulting to 0');
+                credits = 0;
+            }
+        }
+        console.log('Final parsed credits value:', credits);
+
+        // Get recent transactions
         const [transactionRows] = await pool.execute(
             'SELECT * FROM credit_transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10',
             [userId]
         );
 
         const response = { 
-            credits: parseInt(userRows[0].credits) || 0,
+            credits: credits,
             recentTransactions: transactionRows
         };
         
-        console.log('Sending credits response:', response);
+        console.log('Final credits response:', response);
         res.json(response);
     } catch (error) {
         console.error('Error fetching user credits:', error);
