@@ -177,7 +177,8 @@ async function processBatch(rows, url) {
                 email VARCHAR(255) NOT NULL UNIQUE,
                 password VARCHAR(255) NOT NULL,
                 name VARCHAR(255) NOT NULL,
-                role VARCHAR(255) NOT NULL DEFAULT 'user'
+                role VARCHAR(255) NOT NULL DEFAULT 'user',
+                credits INT NOT NULL DEFAULT 0
             )
         `);
         console.log("✅ Users table ready.");
@@ -197,6 +198,32 @@ async function processBatch(rows, url) {
             )
         `);
         console.log("✅ Persons table ready.");
+        
+        // Create credit_transactions table
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS credit_transactions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                amount INT NOT NULL,
+                transaction_type ENUM('purchase', 'usage') NOT NULL,
+                description VARCHAR(255),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        `);
+        console.log("✅ Credit transactions table ready.");
+        
+        // Create profiles_credits table to track credit usage per profile
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS profile_credits (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                profile_name VARCHAR(255) NOT NULL,
+                user_id INT NOT NULL,
+                used_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        `);
+        console.log("✅ Profile credits table ready.");
 
         // Create user_tracking table
         await pool.execute(`
@@ -423,6 +450,74 @@ async function processBatch(rows, url) {
 const requireAuth = (req, res, next) => {
     if (!req.session.user || !req.session.user.id) {
         return res.status(401).json({ message: "Not authenticated" });
+    }
+    next();
+};
+
+// --- Credits System Middleware ---
+// Check if user has enough credits and consume a credit when adding a profile
+const checkAndConsumeCredit = async (req, res, next) => {
+    if (!req.session.user || !req.session.user.id) {
+        return res.status(401).json({ message: 'Authentication required' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+        
+        // Check if user has credits
+        const [userRows] = await connection.execute(
+            'SELECT credits FROM users WHERE id = ?',
+            [req.session.user.id]
+        );
+        
+        if (userRows.length === 0 || userRows[0].credits <= 0) {
+            await connection.rollback();
+            return res.status(402).json({ 
+                message: 'Insufficient credits',
+                needCredits: true
+            });
+        }
+        
+        // Deduct a credit
+        await connection.execute(
+            'UPDATE users SET credits = credits - 1 WHERE id = ?',
+            [req.session.user.id]
+        );
+        
+        // Record the transaction
+        await connection.execute(
+            'INSERT INTO credit_transactions (user_id, amount, transaction_type, description) VALUES (?, ?, ?, ?)',
+            [req.session.user.id, 1, 'usage', 'Added profile for tracking']
+        );
+        
+        await connection.commit();
+        
+        // Store the profile name in the request for later use
+        req.profileName = req.body.name || req.body.fullName || req.params.name || 'Unknown Profile';
+        
+        next();
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error checking credits:', error);
+        res.status(500).json({ message: 'Server error' });
+    } finally {
+        connection.release();
+    }
+};
+
+// Record profile credit usage after successful profile creation
+const recordProfileCredit = async (req, res, next) => {
+    try {
+        if (req.profileName && req.session.user && req.session.user.id) {
+            await pool.execute(
+                'INSERT INTO profile_credits (profile_name, user_id) VALUES (?, ?)',
+                [req.profileName, req.session.user.id]
+            );
+        }
+    } catch (error) {
+        console.error('Error recording profile credit:', error);
+        // Continue execution even if recording fails
     }
     next();
 };
@@ -706,7 +801,7 @@ app.get('/api/tracked-persons', requireAuth, async (req, res) => {
     }
 });
 
-app.post('/api/tracking/:name', requireAuth, async (req, res) => {
+app.post('/api/tracking/:name', requireAuth, checkAndConsumeCredit, async (req, res) => {
     const userId = req.session.user.id;
     const { name } = req.params;
     const { isTracking } = req.body;
@@ -792,7 +887,7 @@ app.post('/api/tracking/:name', requireAuth, async (req, res) => {
 });
 
 // --- Individual Onboarding Form Submission ---
-app.post('/api/registerIndividual', requireAuth, async (req, res) => {
+app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (req, res) => {
     try {
         const userId = req.session.user.id; // Get the logged-in user's ID from the session
         const {
@@ -904,7 +999,7 @@ app.post('/api/registerIndividual', requireAuth, async (req, res) => {
 });
 
 // --- Company Registration ---
-app.post('/api/registerCompany', requireAuth, async (req, res) => {
+app.post('/api/registerCompany', requireAuth, checkAndConsumeCredit, async (req, res) => {
     try {
         const userId = req.session.user.id; // Get user ID from session
         const {
@@ -1830,6 +1925,84 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
     }
 });
 
+// --- Credits System Endpoints ---
+
+// Get user credits information
+app.get('/credits', requireAuth, async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+
+        const [userRows] = await pool.execute(
+            'SELECT credits FROM users WHERE id = ?',
+            [userId]
+        );
+
+        if (userRows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const [transactionRows] = await pool.execute(
+            'SELECT * FROM credit_transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10',
+            [userId]
+        );
+
+        res.json({ 
+            credits: userRows[0].credits,
+            recentTransactions: transactionRows
+        });
+    } catch (error) {
+        console.error('Error fetching user credits:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Purchase credits
+app.post('/credits/purchase', requireAuth, async (req, res) => {
+    const { amount, plan } = req.body;
+    
+    if (!amount || amount <= 0) {
+        return res.status(400).json({ message: 'Invalid credit amount' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+        
+        const userId = req.session.user.id;
+        
+        // Add credits to user's account
+        await connection.execute(
+            'UPDATE users SET credits = credits + ? WHERE id = ?',
+            [amount, userId]
+        );
+        
+        // Record the transaction
+        await connection.execute(
+            'INSERT INTO credit_transactions (user_id, amount, transaction_type, description) VALUES (?, ?, ?, ?)',
+            [userId, amount, 'purchase', `Purchased ${plan || amount} credits`]
+        );
+        
+        // Get updated credit balance
+        const [rows] = await connection.execute(
+            'SELECT credits FROM users WHERE id = ?',
+            [userId]
+        );
+        
+        await connection.commit();
+        
+        res.json({ 
+            success: true, 
+            message: 'Credits purchased successfully',
+            newBalance: rows[0].credits
+        });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error purchasing credits:', error);
+        res.status(500).json({ message: 'Failed to purchase credits' });
+    } finally {
+        connection.release();
+    }
+});
 
 // --- Start Server ---
 app.listen(port, () => {
