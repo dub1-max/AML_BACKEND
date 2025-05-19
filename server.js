@@ -2002,7 +2002,7 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
 // --- Credits System Endpoints ---
 
 // Get user credits information
-app.get('/credits', requireAuth, async (req, res) => {
+app.get('/api/credits', requireAuth, async (req, res) => {
     try {
         const userId = req.session.user.id;
         console.log('Fetching credits for user:', userId);
