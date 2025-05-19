@@ -2005,6 +2005,7 @@ app.post('/api/updateProfile/:id', requireAuth, async (req, res) => {
 app.get('/credits', requireAuth, async (req, res) => {
     try {
         const userId = req.session.user.id;
+        console.log('Fetching credits for user:', userId);
 
         const [userRows] = await pool.execute(
             'SELECT credits FROM users WHERE id = ?',
@@ -2012,18 +2013,24 @@ app.get('/credits', requireAuth, async (req, res) => {
         );
 
         if (userRows.length === 0) {
+            console.log('User not found:', userId);
             return res.status(404).json({ message: 'User not found' });
         }
+
+        console.log('User credits found:', userRows[0].credits);
 
         const [transactionRows] = await pool.execute(
             'SELECT * FROM credit_transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10',
             [userId]
         );
 
-        res.json({ 
-            credits: userRows[0].credits,
+        const response = { 
+            credits: parseInt(userRows[0].credits) || 0,
             recentTransactions: transactionRows
-        });
+        };
+        
+        console.log('Sending credits response:', response);
+        res.json(response);
     } catch (error) {
         console.error('Error fetching user credits:', error);
         res.status(500).json({ message: 'Server error' });
