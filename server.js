@@ -182,6 +182,32 @@ async function processBatch(rows, url) {
             )
         `);
         console.log("✅ Users table ready.");
+        
+        // Create credit_transactions table if it doesn't exist
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS credit_transactions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                amount INT NOT NULL,
+                transaction_type ENUM('purchase', 'usage') NOT NULL,
+                description VARCHAR(255),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        `);
+        console.log("✅ Credit transactions table ready.");
+        
+        // Create profile_credits table to track credit usage per profile
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS profile_credits (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                profile_name VARCHAR(255) NOT NULL,
+                user_id INT NOT NULL,
+                used_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        `);
+        console.log("✅ Profile credits table ready.");
 
         // Create persons table
         await pool.execute(`
@@ -432,8 +458,15 @@ async function processBatch(rows, url) {
                 console.log("Adding status column to companyob table");
                 await pool.execute("ALTER TABLE companyob ADD COLUMN status VARCHAR(50) DEFAULT 'pending'");
             }
+            
+            // Check if the credits column exists in users table
+            const [creditsColumn] = await pool.execute("SHOW COLUMNS FROM users LIKE 'credits'");
+            if (creditsColumn.length === 0) {
+                console.log("Adding credits column to users table");
+                await pool.execute("ALTER TABLE users ADD COLUMN credits INT NOT NULL DEFAULT 0");
+            }
         } catch (error) {
-            console.error("Error adding status columns:", error);
+            console.error("Error adding columns:", error);
             // Continue execution even if column addition fails
         }
 
@@ -568,10 +601,25 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
 
-        req.session.user = { id: user.id, email: user.email, name: user.name, role: user.role };
+        req.session.user = { 
+            id: user.id, 
+            email: user.email, 
+            name: user.name, 
+            role: user.role,
+            credits: user.credits || 0
+        };
         req.session.isAuthenticated = true;  // You can use this if you need it elsewhere
 
-        res.json({ message: 'Login successful', user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+        res.json({ 
+            message: 'Login successful', 
+            user: { 
+                id: user.id, 
+                email: user.email, 
+                name: user.name, 
+                role: user.role,
+                credits: user.credits || 0 
+            } 
+        });
 
     } catch (error) {
         console.error('Login error:', error);
@@ -590,8 +638,34 @@ app.post('/api/auth/logout', (req, res) => {
     });
 });
 
-app.get('/api/auth/user', requireAuth, (req, res) => {
-    res.json({ user: req.session.user });
+app.get('/api/auth/user', requireAuth, async (req, res) => {
+    try {
+        // Fetch user with credits info
+        const [userRows] = await pool.execute(
+            'SELECT id, email, name, role, credits FROM users WHERE id = ?',
+            [req.session.user.id]
+        );
+        
+        if (userRows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        
+        const user = userRows[0];
+        
+        // Update session with latest user data including credits
+        req.session.user = { 
+            id: user.id, 
+            email: user.email, 
+            name: user.name, 
+            role: user.role,
+            credits: user.credits || 0
+        };
+        
+        res.json({ user: req.session.user });
+    } catch (error) {
+        console.error('Error fetching user data:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
 });
 
 // --- Person Search and Retrieval Routes ---
