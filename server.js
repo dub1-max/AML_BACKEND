@@ -701,23 +701,39 @@ app.get('/api/auth/user', requireAuth, async (req, res) => {
 app.get('/api/persons', requireAuth, async (req, res) => {
     try {
         const { page = 1, limit = 50 } = req.query;
+        const userId = req.session.user.id;
         const startRow = (parseInt(page) - 1) * parseInt(limit) + 1;
         const endRow = startRow + parseInt(limit) - 1;
 
+        // Build query with LEFT JOIN to individualob to check user association
+        const baseQuery = `
+            FROM persons p
+            LEFT JOIN individualob io ON p.name = io.full_name
+            WHERE (
+                p.dataset != 'onboarded' 
+                OR (p.dataset = 'onboarded' AND io.user_id = ?)
+            )
+        `;
+        const params = [userId];
+
         // First get total count
-        const [countResult] = await pool.execute('SELECT COUNT(*) as total FROM persons');
+        const countQuery = `SELECT COUNT(*) as total ${baseQuery}`;
+        const [countResult] = await pool.execute(countQuery, params);
         const total = countResult[0].total;
 
         // Then get paginated results using ROW_NUMBER
         const query = `
             WITH numbered_rows AS (
-                SELECT *, ROW_NUMBER() OVER (ORDER BY name) as row_num
-                FROM persons
+                SELECT p.*, ROW_NUMBER() OVER (ORDER BY p.name) as row_num
+                ${baseQuery}
             )
             SELECT * FROM numbered_rows 
             WHERE row_num >= ? AND row_num <= ?`;
 
-        const [rows] = await pool.execute(query, [startRow, endRow]);
+        // Add pagination parameters
+        params.push(startRow, endRow);
+        
+        const [rows] = await pool.execute(query, params);
         
         // Clean up the response data
         const cleanedRows = rows.map(row => {
@@ -743,18 +759,28 @@ app.get('/api/persons', requireAuth, async (req, res) => {
 app.get('/api/persons/search', requireAuth, async (req, res) => {
     try {
         const { searchTerm, searchId, page = 1, limit = 50 } = req.query;
+        const userId = req.session.user.id;
         const startRow = (parseInt(page) - 1) * parseInt(limit) + 1;
         const endRow = startRow + parseInt(limit) - 1;
         
-        let baseQuery = 'FROM persons WHERE 1=1';
-        const params = [];
+        // Build query with LEFT JOIN to individualob to check user association
+        let baseQuery = `
+            FROM persons p
+            LEFT JOIN individualob io ON p.name = io.full_name
+            WHERE 1=1
+            AND (
+                p.dataset != 'onboarded' 
+                OR (p.dataset = 'onboarded' AND io.user_id = ?)
+            )
+        `;
+        const params = [userId]; // Add userId as first parameter
         
         if (searchTerm) {
-            baseQuery += ' AND name LIKE ?';
+            baseQuery += ' AND p.name LIKE ?';
             params.push(`%${searchTerm}%`);
         }
         if (searchId) {
-            baseQuery += ' AND identifiers LIKE ?';
+            baseQuery += ' AND p.identifiers LIKE ?';
             params.push(`%${searchId}%`);
         }
 
@@ -766,7 +792,7 @@ app.get('/api/persons/search', requireAuth, async (req, res) => {
         // Then get paginated results using ROW_NUMBER
         const query = `
             WITH numbered_rows AS (
-                SELECT *, ROW_NUMBER() OVER (ORDER BY name) as row_num
+                SELECT p.*, ROW_NUMBER() OVER (ORDER BY p.name) as row_num
                 ${baseQuery}
             )
             SELECT * FROM numbered_rows 
