@@ -494,6 +494,33 @@ const checkAndConsumeCredit = async (req, res, next) => {
         return res.status(401).json({ message: 'Authentication required' });
     }
 
+    // Skip credit check if turning tracking off
+    if (req.body.isTracking === false) {
+        return next();
+    }
+
+    // Check if this is a special refresh command
+    if (req.params.name === '__refresh__') {
+        return next();
+    }
+
+    // Check if profile has EVER been tracked before (even if inactive now)
+    try {
+        const [trackingRows] = await pool.execute(
+            `SELECT * FROM user_tracking 
+             WHERE user_id = ? AND name = ?`,
+            [req.session.user.id, req.params.name]
+        );
+        
+        // If the profile has been tracked before (even if currently inactive), don't charge again
+        if (trackingRows.length > 0) {
+            return next();
+        }
+    } catch (error) {
+        console.error('Error checking existing tracking:', error);
+        // Continue to credit check even if this fails
+    }
+
     const connection = await pool.getConnection();
     try {
         await connection.beginTransaction();
@@ -512,17 +539,19 @@ const checkAndConsumeCredit = async (req, res, next) => {
             });
         }
         
-        // Deduct a credit
-        await connection.execute(
-            'UPDATE users SET credits = credits - 1 WHERE id = ?',
-            [req.session.user.id]
-        );
-        
-        // Record the transaction
-        await connection.execute(
-            'INSERT INTO credit_transactions (user_id, amount, transaction_type, description) VALUES (?, ?, ?, ?)',
-            [req.session.user.id, 1, 'usage', 'Added profile for tracking']
-        );
+        // Deduct a credit only if tracking is being turned on
+        if (req.body.isTracking === true) {
+            await connection.execute(
+                'UPDATE users SET credits = credits - 1 WHERE id = ?',
+                [req.session.user.id]
+            );
+            
+            // Record the transaction
+            await connection.execute(
+                'INSERT INTO credit_transactions (user_id, amount, transaction_type, description) VALUES (?, ?, ?, ?)',
+                [req.session.user.id, 1, 'usage', `Started tracking for ${req.params.name}`]
+            );
+        }
         
         await connection.commit();
         
