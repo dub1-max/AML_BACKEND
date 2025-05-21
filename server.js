@@ -2197,27 +2197,9 @@ app.get('/api/subscription', requireAuth, async (req, res) => {
             // Continue to mock data
         }
 
-        // If no subscription found, create a mock one based on user ID
-        if (!subscription) {
-            const mockPlans = [
-                { id: 'starter', name: 'Starter', price: 200, currency: 'AED', profileLimit: 100, isPopular: false },
-                { id: 'essential', name: 'Essential', price: 500, currency: 'AED', profileLimit: 250, isPopular: true },
-                { id: 'business', name: 'Business', price: 1000, currency: 'AED', profileLimit: 500, isPopular: false },
-                { id: 'corporate', name: 'Corporate', price: 1500, currency: 'AED', profileLimit: 750, isPopular: false }
-            ];
-            
-            // For demo purposes, assign a subscription based on user ID
-            const planIndex = userId % mockPlans.length;
-            const selectedPlan = mockPlans[planIndex];
-            
-            // Create subscription object
-            subscription = {
-                ...selectedPlan,
-                startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
-                endDate: new Date(Date.now() + 335 * 24 * 60 * 60 * 1000), // 335 days from now
-                isActive: true
-            };
-        }
+        // No more mock subscriptions based on user ID
+        // If no subscription is found, subscription remains null
+        // This indicates the user hasn't purchased any plan
 
         res.json({
             subscription: subscription,
@@ -2297,6 +2279,137 @@ app.post('/credits/purchase', requireAuth, async (req, res) => {
         await connection.rollback();
         console.error('Error purchasing credits:', error);
         res.status(500).json({ message: 'Failed to purchase credits' });
+    } finally {
+        connection.release();
+    }
+});
+
+// Purchase subscription plan
+app.post('/api/subscription/purchase', requireAuth, async (req, res) => {
+    const { planId, paymentMethod, paymentId, paymentDetails } = req.body;
+    
+    if (!planId) {
+        return res.status(400).json({ message: 'Plan ID is required' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+        
+        const userId = req.session.user.id;
+        
+        // Define available plans
+        const availablePlans = {
+            'starter': { 
+                name: 'Starter', 
+                price: 200, 
+                currency: 'AED', 
+                profileLimit: 100 
+            },
+            'essential': { 
+                name: 'Essential', 
+                price: 500, 
+                currency: 'AED', 
+                profileLimit: 250 
+            },
+            'business': { 
+                name: 'Business', 
+                price: 1000, 
+                currency: 'AED', 
+                profileLimit: 500 
+            },
+            'corporate': { 
+                name: 'Corporate', 
+                price: 1500, 
+                currency: 'AED', 
+                profileLimit: 750 
+            }
+        };
+        
+        // Check if the plan exists
+        if (!availablePlans[planId]) {
+            await connection.rollback();
+            return res.status(400).json({ message: 'Invalid plan selected' });
+        }
+        
+        const selectedPlan = availablePlans[planId];
+        
+        // Calculate subscription period - 1 year from now
+        const startDate = new Date();
+        const endDate = new Date();
+        endDate.setFullYear(endDate.getFullYear() + 1);
+        
+        // Record payment information
+        let paymentInfo = {
+            method: paymentMethod || 'manual',
+            id: paymentId || `sub_${Date.now()}`, // Generate an ID if not provided
+            timestamp: new Date().toISOString(),
+            details: paymentDetails ? JSON.stringify(paymentDetails) : null
+        };
+        
+        // Deactivate any existing subscription
+        await connection.execute(
+            'UPDATE subscriptions SET is_active = FALSE WHERE user_id = ? AND is_active = TRUE',
+            [userId]
+        );
+        
+        // Add the new subscription
+        await connection.execute(
+            `INSERT INTO subscriptions (
+                user_id, plan_id, plan_name, price, currency, profile_limit, 
+                start_date, end_date, is_active, payment_id, payment_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)`,
+            [
+                userId,
+                planId,
+                selectedPlan.name,
+                selectedPlan.price,
+                selectedPlan.currency,
+                selectedPlan.profileLimit,
+                startDate,
+                endDate,
+                paymentInfo.id,
+                paymentInfo.method
+            ]
+        );
+        
+        // Record the transaction
+        await connection.execute(
+            'INSERT INTO credit_transactions (user_id, amount, transaction_type, description, payment_method, payment_id, payment_details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [
+                userId, 
+                selectedPlan.price, 
+                'subscription', 
+                `Purchased ${selectedPlan.name} subscription plan for ${selectedPlan.price} ${selectedPlan.currency}`,
+                paymentInfo.method,
+                paymentInfo.id,
+                paymentInfo.details
+            ]
+        );
+        
+        await connection.commit();
+        
+        // Record successful subscription in server logs
+        console.log(`Subscription successful - User ${userId} purchased ${selectedPlan.name} plan via ${paymentInfo.method}`);
+        
+        res.json({ 
+            success: true, 
+            message: `Successfully subscribed to ${selectedPlan.name} plan`,
+            subscription: {
+                id: planId,
+                name: selectedPlan.name,
+                price: selectedPlan.price,
+                currency: selectedPlan.currency,
+                profileLimit: selectedPlan.profileLimit,
+                startDate: startDate,
+                endDate: endDate,
+                isActive: true
+            }
+        });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error purchasing subscription:', error);
+        res.status(500).json({ message: 'Failed to purchase subscription plan' });
     } finally {
         connection.release();
     }
