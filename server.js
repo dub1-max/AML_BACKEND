@@ -60,8 +60,8 @@ const pool = mysql.createPool({
 const SANCTIONS_URLS = [
     'https://data.opensanctions.org/datasets/latest/ae_local_terrorists/targets.simple.csv',
     'https://data.opensanctions.org/datasets/latest/un_sc_sanctions/targets.simple.csv',
-    'https://data.opensanctions.org/datasets/20250205/peps/targets.simple.csv',
-    'https://data.opensanctions.org/datasets/20250206/debarment/targets.simple.csv',
+    'https://data.opensanctions.org/datasets/latest/peps/targets.simple.csv',
+    'https://data.opensanctions.org/datasets/latest/debarment/targets.simple.csv',
 ];
 
 const UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
