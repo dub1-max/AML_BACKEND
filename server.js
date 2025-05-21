@@ -2121,6 +2121,120 @@ app.get('/api/credits', requireAuth, async (req, res) => {
     }
 });
 
+// Get subscription information
+app.get('/api/subscription', requireAuth, async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+        console.log('Fetching subscription for user:', userId);
+        
+        // In future implementations, fetch from a subscriptions table
+        // For now, return a mock subscription based on user ID
+
+        // Get user from database to check if we have subscription info
+        const [userRows] = await pool.execute(
+            'SELECT id, email, name, role FROM users WHERE id = ?',
+            [userId]
+        );
+
+        if (userRows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Check if a subscriptions table exists - if not, create one for future use
+        try {
+            await pool.execute(`
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    plan_id VARCHAR(50) NOT NULL,
+                    plan_name VARCHAR(100) NOT NULL,
+                    price DECIMAL(10,2) NOT NULL,
+                    currency VARCHAR(10) NOT NULL DEFAULT 'AED',
+                    profile_limit INT NOT NULL,
+                    start_date DATETIME NOT NULL,
+                    end_date DATETIME NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    payment_id VARCHAR(255),
+                    payment_method VARCHAR(50),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            `);
+            console.log("✅ Subscriptions table ready for future use.");
+        } catch (dbError) {
+            console.error("Error creating subscriptions table:", dbError);
+            // Continue execution - this is just preparation for future
+        }
+
+        // Check if user has a subscription in the subscriptions table
+        let subscription = null;
+        try {
+            const [subRows] = await pool.execute(
+                `SELECT * FROM subscriptions 
+                 WHERE user_id = ? AND is_active = TRUE AND end_date > NOW()
+                 ORDER BY end_date DESC
+                 LIMIT 1`,
+                [userId]
+            );
+            
+            if (subRows.length > 0) {
+                const sub = subRows[0];
+                subscription = {
+                    id: sub.plan_id,
+                    name: sub.plan_name,
+                    price: parseFloat(sub.price),
+                    currency: sub.currency,
+                    profileLimit: sub.profile_limit,
+                    startDate: sub.start_date,
+                    endDate: sub.end_date,
+                    isActive: true,
+                    isPopular: sub.plan_id === 'essential'
+                };
+            }
+        } catch (error) {
+            console.log('Error fetching from subscriptions table, likely does not exist yet:', error.message);
+            // Continue to mock data
+        }
+
+        // If no subscription found, create a mock one based on user ID
+        if (!subscription) {
+            const mockPlans = [
+                { id: 'starter', name: 'Starter', price: 200, currency: 'AED', profileLimit: 100, isPopular: false },
+                { id: 'essential', name: 'Essential', price: 500, currency: 'AED', profileLimit: 250, isPopular: true },
+                { id: 'business', name: 'Business', price: 1000, currency: 'AED', profileLimit: 500, isPopular: false },
+                { id: 'corporate', name: 'Corporate', price: 1500, currency: 'AED', profileLimit: 750, isPopular: false }
+            ];
+            
+            // For demo purposes, assign a subscription based on user ID
+            const planIndex = userId % mockPlans.length;
+            const selectedPlan = mockPlans[planIndex];
+            
+            // Create subscription object
+            subscription = {
+                ...selectedPlan,
+                startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
+                endDate: new Date(Date.now() + 335 * 24 * 60 * 60 * 1000), // 335 days from now
+                isActive: true
+            };
+        }
+
+        res.json({
+            subscription: subscription,
+            availablePlans: [
+                { id: 'starter', name: 'Starter', price: 200, currency: 'AED', profileLimit: 100, isPopular: false },
+                { id: 'essential', name: 'Essential', price: 500, currency: 'AED', profileLimit: 250, isPopular: true },
+                { id: 'business', name: 'Business', price: 1000, currency: 'AED', profileLimit: 500, isPopular: false },
+                { id: 'corporate', name: 'Corporate', price: 1500, currency: 'AED', profileLimit: 750, isPopular: false }
+            ]
+        });
+
+    } catch (error) {
+        console.error('Error fetching subscription:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 // Purchase credits
 app.post('/credits/purchase', requireAuth, async (req, res) => {
     const { amount, plan, paymentMethod, paymentId, paymentDetails } = req.body;
