@@ -183,6 +183,13 @@ async function processBatch(rows, url) {
         `);
         console.log("✅ Users table ready.");
         
+        // Check if the credits column exists in users table
+        const [creditsColumn] = await pool.execute("SHOW COLUMNS FROM users LIKE 'credits'");
+        if (creditsColumn.length === 0) {
+            console.log("Adding credits column to users table");
+            await pool.execute("ALTER TABLE users ADD COLUMN credits INT NOT NULL DEFAULT 0");
+        }
+        
         // Create credit_transactions table if it doesn't exist
         await pool.execute(`
             CREATE TABLE IF NOT EXISTS credit_transactions (
@@ -191,6 +198,9 @@ async function processBatch(rows, url) {
                 amount INT NOT NULL,
                 transaction_type ENUM('purchase', 'usage') NOT NULL,
                 description VARCHAR(255),
+                payment_method VARCHAR(50),
+                payment_id VARCHAR(255),
+                payment_details TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
@@ -233,6 +243,9 @@ async function processBatch(rows, url) {
                 amount INT NOT NULL,
                 transaction_type ENUM('purchase', 'usage') NOT NULL,
                 description VARCHAR(255),
+                payment_method VARCHAR(50),
+                payment_id VARCHAR(255),
+                payment_details TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
@@ -2110,7 +2123,7 @@ app.get('/api/credits', requireAuth, async (req, res) => {
 
 // Purchase credits
 app.post('/credits/purchase', requireAuth, async (req, res) => {
-    const { amount, plan } = req.body;
+    const { amount, plan, paymentMethod, paymentId, paymentDetails } = req.body;
     
     if (!amount || amount <= 0) {
         return res.status(400).json({ message: 'Invalid credit amount' });
@@ -2122,16 +2135,32 @@ app.post('/credits/purchase', requireAuth, async (req, res) => {
         
         const userId = req.session.user.id;
         
+        // Record payment information
+        let paymentInfo = {
+            method: paymentMethod || 'manual',
+            id: paymentId || null,
+            timestamp: new Date().toISOString(),
+            details: paymentDetails ? JSON.stringify(paymentDetails) : null
+        };
+        
         // Add credits to user's account
         await connection.execute(
             'UPDATE users SET credits = credits + ? WHERE id = ?',
             [amount, userId]
         );
         
-        // Record the transaction
+        // Record the transaction with payment information
         await connection.execute(
-            'INSERT INTO credit_transactions (user_id, amount, transaction_type, description) VALUES (?, ?, ?, ?)',
-            [userId, amount, 'purchase', `Purchased ${plan || amount} credits`]
+            'INSERT INTO credit_transactions (user_id, amount, transaction_type, description, payment_method, payment_id, payment_details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [
+                userId, 
+                amount, 
+                'purchase', 
+                `Purchased ${plan || amount} credits via ${paymentMethod || 'manual payment'}`,
+                paymentInfo.method,
+                paymentInfo.id,
+                paymentInfo.details
+            ]
         );
         
         // Get updated credit balance
@@ -2141,6 +2170,9 @@ app.post('/credits/purchase', requireAuth, async (req, res) => {
         );
         
         await connection.commit();
+        
+        // Record successful payment in server logs
+        console.log(`Payment successful - User ${userId} purchased ${amount} credits via ${paymentMethod || 'manual payment'}`);
         
         res.json({ 
             success: true, 
