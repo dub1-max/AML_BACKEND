@@ -13,7 +13,8 @@ const port = process.env.PORT || 3001;
 
 const ALLOWED_ORIGINS = [
     'http://localhost:5173',
-    'http://137.184.150.6:5173'
+    'http://137.184.150.6:5173',
+    'http://kycsync.com',
 ];
 
 app.use(cors({
