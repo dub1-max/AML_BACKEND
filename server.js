@@ -15,6 +15,7 @@ const ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://137.184.150.6:5173',
     'http://kycsync.com',
+    'http://kycsync.com:5173',
 ];
 
 app.use(cors({
