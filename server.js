@@ -9,12 +9,12 @@ const fetch = require('node-fetch');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = 5173;
 
 const ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://kycsync.com',
-    'http://kycsync.com:5173',
+    'http://kycsync.com:80'
 ];
 
 app.use(cors({
