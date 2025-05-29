@@ -9,7 +9,23 @@ const fetch = require('node-fetch');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 80; // Change to standard HTTP port
+
+// Add Cloudflare IP handling
+app.set('trust proxy', true);
+app.enable('trust proxy');
+
+// Add timeout handling
+app.use((req, res, next) => {
+    req.setTimeout(120000); // 2 minutes
+    res.setTimeout(120000); // 2 minutes
+    next();
+});
+
+// Add health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).send('OK');
+});
 
 const ALLOWED_ORIGINS = [
     'http://localhost:5173',
@@ -19,9 +35,6 @@ const ALLOWED_ORIGINS = [
     'https://www.kycsync.com',
     'http://kycsync.com:5173',
 ];
-
-// Add Cloudflare IP handling
-app.set('trust proxy', true);
 
 app.use(cors({
     origin: function(origin, callback) {
@@ -38,6 +51,12 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept', 'CF-Connecting-IP', 'CF-IPCountry', 'CF-RAY', 'CF-Visitor'],
     credentials: true,
 }));
+
+// Add error handling middleware
+app.use((err, req, res, next) => {
+    console.error('Server error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+});
 
 app.use(express.json());
 
