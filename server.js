@@ -9,41 +9,24 @@ const fetch = require('node-fetch');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 80; // Change to standard HTTP port
-
-// Add Cloudflare IP handling
-app.set('trust proxy', true);
-app.enable('trust proxy');
-
-// Add timeout handling
-app.use((req, res, next) => {
-    req.setTimeout(120000); // 2 minutes
-    res.setTimeout(120000); // 2 minutes
-    next();
-});
-
-// Add health check endpoint
-app.get('/health', (req, res) => {
-    res.status(200).send('OK');
-});
+const port = process.env.PORT || 3001;
 
 const ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://kycsync.com',
     'https://kycsync.com',
-    'http://www.kycsync.com',
-    'https://www.kycsync.com',
     'http://kycsync.com:5173',
+    'https://www.kycsync.com'
 ];
 
 app.use(cors({
     origin: function(origin, callback) {
-        // Allow requests with no origin (like mobile apps, curl requests, or Cloudflare)
+        // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
         
         if (ALLOWED_ORIGINS.indexOf(origin) === -1) {
-            console.log(`Rejected origin: ${origin}`);
-            return callback(null, true); // Allow all origins in production
+            var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+            return callback(new Error(msg), false);
         }
         return callback(null, true);
     },
@@ -52,10 +35,12 @@ app.use(cors({
     credentials: true,
 }));
 
-// Add error handling middleware
-app.use((err, req, res, next) => {
-    console.error('Server error:', err);
-    res.status(500).json({ message: 'Internal server error', error: err.message });
+// Add Cloudflare-specific middleware
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    next();
 });
 
 app.use(express.json());
@@ -91,6 +76,23 @@ const SANCTIONS_URLS = [
 ];
 
 const UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
+// Add after the CORS middleware and before route handlers
+
+// URL rewriting middleware
+app.use((req, res, next) => {
+    if (req.path.endsWith('index.html')) {
+        const newPath = req.path.slice(0, -10); // Remove 'index.html'
+        return res.redirect(301, newPath);
+    }
+    next();
+});
+
+// Serve static files
+app.use(express.static('public', {
+    extensions: ['html'],
+    index: 'index.html'
+}));
 
 // --- Helper Functions ---
 function calculateRiskLevel(dataset) {
