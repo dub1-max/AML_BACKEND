@@ -14,9 +14,9 @@ const port = process.env.PORT || 3001;
 const ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://kycsync.com',
-    'https://kycsync.com',
     'http://kycsync.com:5173',
-    'https://www.kycsync.com'
+    'https://kycsync.com',
+    'https://www.kycsync.com',
 ];
 
 app.use(cors({
@@ -31,17 +31,9 @@ app.use(cors({
         return callback(null, true);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept', 'CF-Connecting-IP', 'CF-IPCountry', 'CF-RAY', 'CF-Visitor'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept'],
     credentials: true,
 }));
-
-// Add Cloudflare-specific middleware
-app.use((req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
-    next();
-});
 
 app.use(express.json());
 
@@ -50,7 +42,7 @@ app.use(session({
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
+        secure: process.env.NODE_ENV === 'production' || process.env.HTTPS === 'true', // Use secure cookies in production or when HTTPS is enabled
         httpOnly: true,
         maxAge: 1000 * 60 * 60 * 24, // Cookie expiration time (e.g., 24 hours)
         sameSite: 'lax', // Recommended for security
@@ -76,23 +68,6 @@ const SANCTIONS_URLS = [
 ];
 
 const UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
-
-// Add after the CORS middleware and before route handlers
-
-// URL rewriting middleware
-app.use((req, res, next) => {
-    if (req.path.endsWith('index.html')) {
-        const newPath = req.path.slice(0, -10); // Remove 'index.html'
-        return res.redirect(301, newPath);
-    }
-    next();
-});
-
-// Serve static files
-app.use(express.static('public', {
-    extensions: ['html'],
-    index: 'index.html'
-}));
 
 // --- Helper Functions ---
 function calculateRiskLevel(dataset) {
