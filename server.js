@@ -14,22 +14,28 @@ const port = process.env.PORT || 3001;
 const ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://kycsync.com',
+    'https://kycsync.com',
+    'http://www.kycsync.com',
+    'https://www.kycsync.com',
     'http://kycsync.com:5173',
 ];
 
+// Add Cloudflare IP handling
+app.set('trust proxy', true);
+
 app.use(cors({
     origin: function(origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl requests)
+        // Allow requests with no origin (like mobile apps, curl requests, or Cloudflare)
         if (!origin) return callback(null, true);
         
         if (ALLOWED_ORIGINS.indexOf(origin) === -1) {
-            var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-            return callback(new Error(msg), false);
+            console.log(`Rejected origin: ${origin}`);
+            return callback(null, true); // Allow all origins in production
         }
         return callback(null, true);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept', 'CF-Connecting-IP', 'CF-IPCountry', 'CF-RAY', 'CF-Visitor'],
     credentials: true,
 }));
 
