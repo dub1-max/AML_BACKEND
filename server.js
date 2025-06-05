@@ -2844,7 +2844,7 @@ app.post('/api/subscription/purchase', requireAuth, async (req, res) => {
 });
 
 // --- Document Analysis Endpoints ---
-app.post('/analyze-document', requireAuth, upload.single('document'), async (req, res) => {
+app.post('/api/analyze-document', requireAuth, upload.single('document'), async (req, res) => {
     try {
         // Check if file was uploaded
         if (!req.file) {
@@ -2895,7 +2895,7 @@ app.post('/analyze-document', requireAuth, upload.single('document'), async (req
     }
 });
 
-app.post('/analyze-company-document', requireAuth, upload.single('document'), async (req, res) => {
+app.post('/api/analyze-company-document', requireAuth, upload.single('document'), async (req, res) => {
     try {
         // Check if file was uploaded
         if (!req.file) {
@@ -3333,7 +3333,7 @@ function parseCompanyDocumentText(text) {
 }
 
 // --- Self-Link Onboarding Endpoints ---
-app.post('/registerIndividualSelfLink', requireAuth, checkAndConsumeCredit, async (req, res) => {
+app.post('/api/registerIndividualSelfLink', requireAuth, checkAndConsumeCredit, async (req, res) => {
     try {
         const userId = req.session.user.id;
         const {
@@ -3395,7 +3395,7 @@ app.post('/registerIndividualSelfLink', requireAuth, checkAndConsumeCredit, asyn
     }
 });
 
-app.post('/registerCompanySelfLink', requireAuth, checkAndConsumeCredit, async (req, res) => {
+app.post('/api/registerCompanySelfLink', requireAuth, checkAndConsumeCredit, async (req, res) => {
     try {
         const userId = req.session.user.id;
         const formData = req.body;
