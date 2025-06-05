@@ -6,6 +6,8 @@ const Papa = require('papaparse');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const fetch = require('node-fetch');
+const multer = require('multer');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -68,6 +70,38 @@ const SANCTIONS_URLS = [
 ];
 
 const UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, path.join(__dirname, 'uploads'));
+    },
+    filename: function (req, file, cb) {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = path.extname(file.originalname);
+        cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+    }
+});
+
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    fileFilter: function (req, file, cb) {
+        // Accept images and PDFs
+        if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+            cb(null, true);
+        } else {
+            cb(new Error('Only images and PDF files are allowed'));
+        }
+    }
+});
+
+// Create uploads directory if it doesn't exist
+const fs = require('fs');
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+}
 
 // --- Helper Functions ---
 function calculateRiskLevel(dataset) {
@@ -2804,6 +2838,200 @@ app.post('/api/subscription/purchase', requireAuth, async (req, res) => {
         res.status(500).json({ message: 'Failed to purchase subscription plan' });
     } finally {
         connection.release();
+    }
+});
+
+// --- Document Analysis Endpoints ---
+app.post('/analyze-document', requireAuth, upload.single('document'), async (req, res) => {
+    try {
+        // Check if file was uploaded
+        if (!req.file) {
+            return res.status(400).json({ message: 'No document uploaded' });
+        }
+
+        const documentType = req.body.documentType || 'image';
+        console.log(`Processing ${documentType} document: ${req.file.originalname}`);
+        
+        // In a real implementation, you would send this to an OCR service
+        // For now, we'll simulate document analysis with a delay
+        
+        // Wait for 2 seconds to simulate processing
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Return simulated extracted data
+        const extractedData = {
+            fullName: documentType === 'pdf' ? 'John PDF Doe' : 'John Image Doe',
+            dateOfBirth: '1990-01-15',
+            nationality: 'US',
+            countryOfResidence: 'US',
+            nationalIdNumber: 'ID12345678',
+            nationalIdExpiry: '2025-10-20',
+            passportNumber: 'P98765432',
+            passportExpiry: '2028-05-18',
+            address: '123 Main Street',
+            city: 'New York',
+            zipCode: '10001',
+            contactNumber: '2125551234',
+            email: 'john.doe@example.com'
+        };
+        
+        res.json(extractedData);
+    } catch (error) {
+        console.error('Document analysis error:', error);
+        res.status(500).json({ message: 'Error analyzing document' });
+    }
+});
+
+app.post('/analyze-company-document', requireAuth, upload.single('document'), async (req, res) => {
+    try {
+        // Check if file was uploaded
+        if (!req.file) {
+            return res.status(400).json({ message: 'No document uploaded' });
+        }
+
+        const documentType = req.body.documentType || 'image';
+        console.log(`Processing company ${documentType} document: ${req.file.originalname}`);
+        
+        // In a real implementation, you would send this to an OCR service
+        // For now, we'll simulate document analysis with a delay
+        
+        // Wait for 2 seconds to simulate processing
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Return simulated extracted data
+        const extractedData = {
+            companyName: documentType === 'pdf' ? 'Acme Corporation PDF' : 'Acme Corporation',
+            registrationNumber: 'REG123456789',
+            incorporationDate: '2015-03-22',
+            businessNature: 'Technology Services',
+            registeredAddress: '456 Business Avenue, Suite 789',
+            city: 'San Francisco',
+            postalCode: '94105',
+            contactEmail: 'info@acmecorp.com',
+            contactPhone: '4155557890',
+            taxNumber: 'TAX987654321'
+        };
+        
+        res.json(extractedData);
+    } catch (error) {
+        console.error('Company document analysis error:', error);
+        res.status(500).json({ message: 'Error analyzing company document' });
+    }
+});
+
+// --- Self-Link Onboarding Endpoints ---
+app.post('/registerIndividualSelfLink', requireAuth, checkAndConsumeCredit, async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+        const {
+            fullName,
+            email,
+            // ... other fields ...
+            extractedData // Include the extracted data from document
+        } = req.body;
+        
+        // Store the data in the database similar to regular individual onboarding
+        // but also include information about the uploaded document
+        
+        const [result] = await pool.execute(
+            `INSERT INTO individualob (
+                full_name, email, resident_status, gender, date_of_birth, 
+                nationality, country_of_residence, other_nationalities, 
+                specified_other_nationalities, national_id_number, national_id_expiry,
+                passport_number, passport_expiry, address, state, city, zip_code,
+                contact_number, dialing_code, work_type, industry, product_type_offered,
+                product_offered, company_name, position_in_company, onboarded_by,
+                onboarded_at, document_type, has_uploaded_document
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 1)`,
+            [
+                fullName, email, req.body.residentStatus || null, req.body.gender || null, 
+                req.body.dateOfBirth || null, req.body.nationality || null, 
+                req.body.countryOfResidence || null, req.body.otherNationalities ? 1 : 0,
+                req.body.specifiedOtherNationalities || null, req.body.nationalIdNumber || null,
+                req.body.nationalIdExpiry || null, req.body.passportNumber || null,
+                req.body.passportExpiry || null, req.body.address || null, req.body.state || null,
+                req.body.city || null, req.body.zipCode || null, req.body.contactNumber || null,
+                req.body.dialingCode || null, req.body.workType || null, req.body.industry || null,
+                req.body.productTypeOffered || null, req.body.productOffered || null,
+                req.body.companyName || null, req.body.positionInCompany || null,
+                req.session.user.name || 'Self-Service',
+                extractedData?.documentType || 'unknown'
+            ]
+        );
+        
+        const customerId = result.insertId;
+        
+        // Log the activity
+        await logCustomerActivity({
+            customer_id: customerId,
+            customer_name: fullName,
+            actor: req.session.user.name || 'Self-Service',
+            actor_type: 'user',
+            action: 'Registered new individual customer via self-service',
+            purpose: 'Customer Self-Onboarding',
+            timestamp: new Date()
+        });
+        
+        res.status(201).json({ 
+            message: 'Individual registration successful', 
+            id: customerId 
+        });
+    } catch (error) {
+        console.error('Error registering individual via self-link:', error);
+        res.status(500).json({ message: 'Registration failed' });
+    }
+});
+
+app.post('/registerCompanySelfLink', requireAuth, checkAndConsumeCredit, async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+        const formData = req.body;
+        const extractedData = formData.extractedData;
+        
+        // Store the company data in the database similar to regular company onboarding
+        // but also include information about the uploaded document
+        
+        const [result] = await pool.execute(
+            `INSERT INTO companyob (
+                company_name, registration_number, company_type, incorporation_date,
+                business_nature, industry_sector, annual_turnover, employee_count,
+                website_url, registered_address, operating_address, country, state,
+                city, postal_code, contact_person_name, contact_email, contact_phone,
+                tax_number, regulatory_licenses, onboarded_by, onboarded_at,
+                document_type, has_uploaded_document
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 1)`,
+            [
+                formData.companyName, formData.registrationNumber, formData.companyType,
+                formData.incorporationDate, formData.businessNature, formData.industrySector,
+                formData.annualTurnover, formData.employeeCount, formData.websiteUrl,
+                formData.registeredAddress, formData.operatingAddress, formData.country,
+                formData.state, formData.city, formData.postalCode, formData.contactPersonName,
+                formData.contactEmail, formData.contactPhone, formData.taxNumber,
+                formData.regulatoryLicenses, req.session.user.name || 'Self-Service',
+                extractedData?.documentType || 'unknown'
+            ]
+        );
+        
+        const companyId = result.insertId;
+        
+        // Log the activity
+        await logCustomerActivity({
+            customer_id: companyId,
+            customer_name: formData.companyName,
+            actor: req.session.user.name || 'Self-Service',
+            actor_type: 'user',
+            action: 'Registered new company via self-service',
+            purpose: 'Company Self-Onboarding',
+            timestamp: new Date()
+        });
+        
+        res.status(201).json({ 
+            message: 'Company registration successful', 
+            id: companyId 
+        });
+    } catch (error) {
+        console.error('Error registering company via self-link:', error);
+        res.status(500).json({ message: 'Registration failed' });
     }
 });
 
