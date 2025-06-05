@@ -486,6 +486,59 @@ async function processBatch(rows, url) {
             // Continue execution even if column addition fails
         }
 
+        // Create customer_activities table for tracking all customer-related activities
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS customer_activities (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                customer_id INT,
+                customer_name VARCHAR(255) NOT NULL,
+                actor VARCHAR(255) NOT NULL,
+                actor_type ENUM('admin', 'system') NOT NULL,
+                action TEXT NOT NULL,
+                purpose VARCHAR(255),
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                legal_basis VARCHAR(255),
+                retention_period VARCHAR(255) DEFAULT 'Logs retained for 7 years, auto-deleted thereafter',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_customer_id (customer_id),
+                INDEX idx_customer_name (customer_name),
+                INDEX idx_timestamp (timestamp)
+            )
+        `);
+        console.log("✅ Customer activities table ready.");
+        
+        // Add timestamp columns to existing tables if they don't exist
+        try {
+            // Check if the onboarded_at column exists in individualob
+            const [indOnboardedColumns] = await pool.execute("SHOW COLUMNS FROM individualob LIKE 'onboarded_at'");
+            if (indOnboardedColumns.length === 0) {
+                console.log("Adding timestamp columns to individualob table");
+                await pool.execute("ALTER TABLE individualob ADD COLUMN onboarded_at DATETIME");
+                await pool.execute("ALTER TABLE individualob ADD COLUMN onboarded_by VARCHAR(255)");
+                await pool.execute("ALTER TABLE individualob ADD COLUMN approved_at DATETIME");
+                await pool.execute("ALTER TABLE individualob ADD COLUMN approved_by VARCHAR(255)");
+                await pool.execute("ALTER TABLE individualob ADD COLUMN rejected_at DATETIME");
+                await pool.execute("ALTER TABLE individualob ADD COLUMN rejected_by VARCHAR(255)");
+                await pool.execute("ALTER TABLE individualob ADD COLUMN processed_at DATETIME");
+            }
+
+            // Check if the onboarded_at column exists in companyob
+            const [compOnboardedColumns] = await pool.execute("SHOW COLUMNS FROM companyob LIKE 'onboarded_at'");
+            if (compOnboardedColumns.length === 0) {
+                console.log("Adding timestamp columns to companyob table");
+                await pool.execute("ALTER TABLE companyob ADD COLUMN onboarded_at DATETIME");
+                await pool.execute("ALTER TABLE companyob ADD COLUMN onboarded_by VARCHAR(255)");
+                await pool.execute("ALTER TABLE companyob ADD COLUMN approved_at DATETIME");
+                await pool.execute("ALTER TABLE companyob ADD COLUMN approved_by VARCHAR(255)");
+                await pool.execute("ALTER TABLE companyob ADD COLUMN rejected_at DATETIME");
+                await pool.execute("ALTER TABLE companyob ADD COLUMN rejected_by VARCHAR(255)");
+                await pool.execute("ALTER TABLE companyob ADD COLUMN processed_at DATETIME");
+            }
+        } catch (error) {
+            console.error("Error adding timestamp columns:", error);
+            // Continue execution even if column addition fails
+        }
+        
         await fetchAndPopulateData();
         setInterval(fetchAndPopulateData, UPDATE_INTERVAL);
 
@@ -1088,6 +1141,9 @@ app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (r
             });
         }
         
+        // Add onboarded_at timestamp
+        const onboardedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        
         // Crucial change: Add user_id to the query
         const insertQuery = `
             INSERT INTO individualob (
@@ -1096,8 +1152,9 @@ app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (r
                 specified_other_nationalities, national_id_number, national_id_expiry,
                 passport_number, passport_expiry, address, state, city, zip_code,
                 contact_number, dialing_code, work_type, industry,
-                product_type_offered, product_offered, company_name, position_in_company
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                product_type_offered, product_offered, company_name, position_in_company,
+                onboarded_at, onboarded_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const values = [
@@ -1126,11 +1183,43 @@ app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (r
             productTypeOffered,
             productOffered,
             companyName,
-            positionInCompany
+            positionInCompany,
+            onboardedAt,
+            req.session.user.name || 'System'
         ];
 
 
         await pool.execute(insertQuery, values);
+        
+        // Record the onboarding activity
+        try {
+            await pool.execute(
+                `INSERT INTO customer_activities (
+                    customer_id, 
+                    customer_name, 
+                    actor, 
+                    actor_type, 
+                    action, 
+                    purpose, 
+                    timestamp, 
+                    legal_basis
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    null, // Will be updated once we get the customer ID
+                    fullName,
+                    req.session.user.name || 'System',
+                    'admin',
+                    'Registered new customer into the system.',
+                    'Customer Onboarding',
+                    onboardedAt,
+                    'Legitimate interest'
+                ]
+            );
+        } catch (activityError) {
+            console.error('Error recording onboarding activity:', activityError);
+            // Continue even if activity recording fails
+        }
+        
         res.status(201).json({ message: 'Individual registration successful' });
 
     } catch (error) {
@@ -1189,6 +1278,9 @@ app.post('/api/registerCompany', requireAuth, checkAndConsumeCredit, async (req,
             return res.status(409).json({ message: 'Contact email already registered.' });
         }
 
+        // Add onboarded_at timestamp
+        const onboardedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        
         // Crucial: Include user_id in the INSERT query
         const insertQuery = `
             INSERT INTO companyob (
@@ -1198,8 +1290,8 @@ app.post('/api/registerCompany', requireAuth, checkAndConsumeCredit, async (req,
                 registered_address, operating_address, country,
                 state, city, postal_code, contact_person_name,
                 contact_email, contact_phone, tax_number,
-                regulatory_licenses
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                regulatory_licenses, onboarded_at, onboarded_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const values = [
@@ -1223,12 +1315,44 @@ app.post('/api/registerCompany', requireAuth, checkAndConsumeCredit, async (req,
             contactEmail,
             contactPhone,
             taxNumber,
-            regulatoryLicenses
+            regulatoryLicenses,
+            onboardedAt,
+            req.session.user.name || 'System'
         ];
 
         // Use try-catch specifically for the database operation
         try {
-            await pool.execute(insertQuery, values);
+            const [result] = await pool.execute(insertQuery, values);
+            
+            // Record the onboarding activity
+            try {
+                await pool.execute(
+                    `INSERT INTO customer_activities (
+                        customer_id, 
+                        customer_name, 
+                        actor, 
+                        actor_type, 
+                        action, 
+                        purpose, 
+                        timestamp, 
+                        legal_basis
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        result.insertId,
+                        companyName,
+                        req.session.user.name || 'System',
+                        'admin',
+                        'Registered new company into the system.',
+                        'Customer Onboarding',
+                        onboardedAt,
+                        'Legitimate interest'
+                    ]
+                );
+            } catch (activityError) {
+                console.error('Error recording company onboarding activity:', activityError);
+                // Continue even if activity recording fails
+            }
+            
             res.status(201).json({ message: 'Company registration successful' });
         } catch (dbError) {
             if (dbError.code === 'ER_DUP_ENTRY') {
@@ -1452,9 +1576,11 @@ app.post('/api/customer/:type/:id/:action', requireAuth, async (req, res) => {
             const table = type === 'individual' ? 'individualob' : 'companyob';
             console.log(`Marking ${type} with id ${id} as processed`);
             
+            const processedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+            
             const [result] = await connection.execute(
-                `UPDATE ${table} SET status = 'processed' WHERE id = ? AND user_id = ?`, 
-                [id, userId]
+                `UPDATE ${table} SET status = 'processed', processed_at = ? WHERE id = ? AND user_id = ?`, 
+                [processedAt, id, userId]
             );
             
             console.log('Update operation result:', result);
@@ -1483,10 +1609,13 @@ app.post('/api/customer/:type/:id/:action', requireAuth, async (req, res) => {
                 const customerName = customerRows[0].name;
                 console.log(`Found customer to reject: ${customerName}`);
                 
-                // Update status to rejected
+                // Add rejected timestamp
+                const rejectedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+                
+                // Update status to rejected with timestamp
                 const [updateResult] = await connection.execute(
-                    `UPDATE ${table} SET status = 'rejected' WHERE id = ? AND user_id = ?`, 
-                    [id, userId]
+                    `UPDATE ${table} SET status = 'rejected', rejected_at = ?, rejected_by = ? WHERE id = ? AND user_id = ?`, 
+                    [rejectedAt, req.session.user.name || 'System', id, userId]
                 );
                 
                 console.log('Update operation result:', updateResult);
@@ -1497,6 +1626,35 @@ app.post('/api/customer/:type/:id/:action', requireAuth, async (req, res) => {
                         message: `Failed to update ${type} status. No rows affected.`,
                         details: updateResult
                     });
+                }
+                
+                // Record the rejection activity
+                try {
+                    await connection.execute(
+                        `INSERT INTO customer_activities (
+                            customer_id, 
+                            customer_name, 
+                            actor, 
+                            actor_type, 
+                            action, 
+                            purpose, 
+                            timestamp, 
+                            legal_basis
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [
+                            id,
+                            customerName,
+                            req.session.user.name || 'System',
+                            'admin',
+                            `${type === 'individual' ? 'Customer' : 'Company'} profile rejected.`,
+                            'Account management',
+                            rejectedAt,
+                            'Legitimate interest'
+                        ]
+                    );
+                } catch (activityError) {
+                    console.error('Error recording rejection activity:', activityError);
+                    // Continue even if activity recording fails
                 }
                 
                 // Remove from tracking if they were added
@@ -1514,7 +1672,8 @@ app.post('/api/customer/:type/:id/:action', requireAuth, async (req, res) => {
                     message: `${type} customer rejected successfully`,
                     name: customerName,
                     id: id,
-                    status: 'rejected'
+                    status: 'rejected',
+                    rejected_at: rejectedAt
                 });
             } catch (error) {
                 await connection.rollback();
@@ -1545,6 +1704,9 @@ app.post('/api/customer/:type/:id/:action', requireAuth, async (req, res) => {
             const customerData = rows[0];
             const customerName = type === 'individual' ? customerData.full_name : customerData.company_name;
             console.log(`Found customer name: ${customerName}`);
+            
+            // Add approved timestamp
+            const approvedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
             
             // Check if this name exists in the persons table
             const [personExists] = await connection.execute(
@@ -1609,17 +1771,47 @@ app.post('/api/customer/:type/:id/:action', requireAuth, async (req, res) => {
             }
             
             // We keep the customer in the individualob/companyob table
-            // but mark them as approved
+            // but mark them as approved with timestamp
             console.log(`Marking ${type} customer as approved`);
             await connection.execute(
-                `UPDATE ${table} SET status = 'approved' WHERE id = ?`,
-                [id]
+                `UPDATE ${table} SET status = 'approved', approved_at = ?, approved_by = ? WHERE id = ?`,
+                [approvedAt, req.session.user.name || 'System', id]
             );
+            
+            // Record the approval activity
+            try {
+                await connection.execute(
+                    `INSERT INTO customer_activities (
+                        customer_id, 
+                        customer_name, 
+                        actor, 
+                        actor_type, 
+                        action, 
+                        purpose, 
+                        timestamp, 
+                        legal_basis
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        id,
+                        customerName,
+                        req.session.user.name || 'System',
+                        'admin',
+                        `${type === 'individual' ? 'Customer' : 'Company'} profile approved.`,
+                        'Account management',
+                        approvedAt,
+                        'Legitimate interest'
+                    ]
+                );
+            } catch (activityError) {
+                console.error('Error recording approval activity:', activityError);
+                // Continue even if activity recording fails
+            }
             
             await connection.commit();
             return res.json({ 
                 message: `${type} customer approved and added to tracking`,
-                name: customerName
+                name: customerName,
+                approved_at: approvedAt
             });
         }
     } catch (error) {
