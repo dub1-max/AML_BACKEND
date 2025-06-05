@@ -3009,28 +3009,50 @@ function parseIndividualDocumentText(text) {
         email: ''
     };
     
+    // Log the raw text for debugging
+    console.log("Raw extracted text:", text.substring(0, 500) + "...");
+    
     // Convert text to lowercase for case-insensitive matching
     const lowerText = text.toLowerCase();
+    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
     
     // Extract full name - look for common patterns
     const namePatterns = [
         /name[:\s]+([A-Za-z\s.'-]+)/i,
         /full name[:\s]+([A-Za-z\s.'-]+)/i,
-        /([A-Za-z\s.'-]+)\s+(?=dob|date of birth|birth|born)/i
+        /([A-Za-z\s.'-]+)\s+(?=dob|date of birth|birth|born)/i,
+        /surname[:\s]+([A-Za-z\s.'-]+)/i,
+        /given name[s]?[:\s]+([A-Za-z\s.'-]+)/i
     ];
     
+    // Try to find name in the text
     for (const pattern of namePatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.fullName = match[1].trim();
+            console.log("Found name:", extractedData.fullName);
             break;
+        }
+    }
+    
+    // If no name found yet, try looking for lines that might contain names
+    if (!extractedData.fullName) {
+        for (const line of lines) {
+            if (line.match(/^[A-Z][a-z]+ [A-Z][a-z]+$/)) {
+                // Looks like a "FirstName LastName" format
+                extractedData.fullName = line;
+                console.log("Found potential name from line:", line);
+                break;
+            }
         }
     }
     
     // Extract date of birth
     const dobPatterns = [
-        /(?:date of birth|dob|born on)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
-        /(?:date of birth|dob|born on)[:\s]+([A-Za-z]+\s+[0-9]{1,2},?\s+[0-9]{2,4})/i
+        /(?:date of birth|dob|born on|birth date)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+        /(?:date of birth|dob|born on|birth date)[:\s]+([A-Za-z]+\s+[0-9]{1,2},?\s+[0-9]{2,4})/i,
+        /dob[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+        /birth[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
     ];
     
     for (const pattern of dobPatterns) {
@@ -3044,8 +3066,10 @@ function parseIndividualDocumentText(text) {
                 } else {
                     extractedData.dateOfBirth = match[1].trim();
                 }
+                console.log("Found DOB:", extractedData.dateOfBirth);
             } catch (e) {
                 extractedData.dateOfBirth = match[1].trim();
+                console.log("Found DOB (raw):", extractedData.dateOfBirth);
             }
             break;
         }
@@ -3054,83 +3078,132 @@ function parseIndividualDocumentText(text) {
     // Extract passport number
     const passportPatterns = [
         /passport[:\s#]+([A-Z0-9]+)/i,
-        /passport number[:\s]+([A-Z0-9]+)/i
+        /passport number[:\s]+([A-Z0-9]+)/i,
+        /passport no[:\s\.]+([A-Z0-9]+)/i,
+        /document number[:\s]+([A-Z0-9]+)/i
     ];
     
     for (const pattern of passportPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.passportNumber = match[1].trim();
+            console.log("Found passport number:", extractedData.passportNumber);
+            break;
+        }
+    }
+    
+    // Extract passport expiry
+    const passportExpiryPatterns = [
+        /(?:passport expiry|expiry date|date of expiry|expiration)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+        /(?:valid until|valid to|expiry)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+        /(?:expiry|exp)[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
+    ];
+    
+    for (const pattern of passportExpiryPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            try {
+                const date = new Date(match[1]);
+                if (!isNaN(date.getTime())) {
+                    extractedData.passportExpiry = date.toISOString().split('T')[0];
+                } else {
+                    extractedData.passportExpiry = match[1].trim();
+                }
+                console.log("Found passport expiry:", extractedData.passportExpiry);
+            } catch (e) {
+                extractedData.passportExpiry = match[1].trim();
+                console.log("Found passport expiry (raw):", extractedData.passportExpiry);
+            }
             break;
         }
     }
     
     // Extract ID number
     const idPatterns = [
-        /(?:id|identification|national id)[:\s#]+([A-Z0-9]+)/i,
-        /(?:id|identification|national id) number[:\s]+([A-Z0-9]+)/i
+        /(?:id|identification|national id)[:\s#]+([A-Z0-9-]+)/i,
+        /(?:id|identification|national id) number[:\s]+([A-Z0-9-]+)/i,
+        /(?:identity card|id card)[:\s#]+([A-Z0-9-]+)/i,
+        /(?:identity no|id no)[:\s\.]+([A-Z0-9-]+)/i
     ];
     
     for (const pattern of idPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.nationalIdNumber = match[1].trim();
+            console.log("Found ID number:", extractedData.nationalIdNumber);
             break;
         }
     }
     
     // Extract address
     const addressPatterns = [
-        /address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i,
-        /(?:residential|permanent) address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i
+        /address[:\s]+([A-Za-z0-9\s.,#'\-]+)(?=\n|city|zip|postal)/i,
+        /(?:residential|permanent) address[:\s]+([A-Za-z0-9\s.,#'\-]+)(?=\n|city|zip|postal)/i,
+        /(?:street|location)[:\s]+([A-Za-z0-9\s.,#'\-]+)/i
     ];
     
     for (const pattern of addressPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.address = match[1].trim();
+            console.log("Found address:", extractedData.address);
             break;
         }
     }
     
-    // Extract email
+    // Extract email - look for any email pattern in the text
     const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/;
     const emailMatch = text.match(emailPattern);
     if (emailMatch) {
         extractedData.email = emailMatch[0];
+        console.log("Found email:", extractedData.email);
     }
     
     // Extract phone number
     const phonePatterns = [
-        /(?:phone|tel|telephone|contact)[:\s]+([0-9+\-\(\)\s]{7,})/i,
-        /\b(\+?[0-9]{1,3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{4})\b/
+        /(?:phone|tel|telephone|contact|mobile)[:\s]+([0-9+\-\(\)\s]{7,})/i,
+        /\b(\+?[0-9]{1,3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{4})\b/,
+        /(?:phone|tel|telephone|contact|mobile)[:\s]*([0-9+\-\(\)\s]{7,})/i
     ];
     
     for (const pattern of phonePatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.contactNumber = match[1].trim().replace(/\s+/g, '');
+            console.log("Found phone number:", extractedData.contactNumber);
             break;
         }
     }
     
     // Extract city
-    const cityPattern = /city[:\s]+([A-Za-z\s.'-]+)/i;
-    const cityMatch = text.match(cityPattern);
-    if (cityMatch && cityMatch[1]) {
-        extractedData.city = cityMatch[1].trim();
+    const cityPatterns = [
+        /city[:\s]+([A-Za-z\s.'\-]+)/i,
+        /town[:\s]+([A-Za-z\s.'\-]+)/i,
+        /(?:city|town)[:\s]*([A-Za-z\s.'\-]+)/i,
+        /(?:municipality|district)[:\s]+([A-Za-z\s.'-]+)/i
+    ];
+    
+    for (const pattern of cityPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.city = match[1].trim();
+            console.log("Found city:", extractedData.city);
+            break;
+        }
     }
     
     // Extract zip/postal code
     const zipPatterns = [
         /(?:zip|postal|post)[:\s]+([A-Z0-9\s-]+)/i,
-        /(?:zip|postal|post) code[:\s]+([A-Z0-9\s-]+)/i
+        /(?:zip|postal|post) code[:\s]+([A-Z0-9\s-]+)/i,
+        /(?:zip|postal|post)[:\s]*([A-Z0-9\s-]+)/i
     ];
     
     for (const pattern of zipPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.zipCode = match[1].trim();
+            console.log("Found zip code:", extractedData.zipCode);
             break;
         }
     }
@@ -3139,7 +3212,9 @@ function parseIndividualDocumentText(text) {
     const countryPatterns = [
         /nationality[:\s]+([A-Za-z\s]+)/i,
         /citizen(?:ship)? of[:\s]+([A-Za-z\s]+)/i,
-        /country[:\s]+([A-Za-z\s]+)/i
+        /country[:\s]+([A-Za-z\s]+)/i,
+        /nationality[:\s]*([A-Za-z\s]+)/i,
+        /citizen(?:ship)?[:\s]*([A-Za-z\s]+)/i
     ];
     
     for (const pattern of countryPatterns) {
@@ -3150,14 +3225,19 @@ function parseIndividualDocumentText(text) {
             // If we haven't found nationality yet, use this
             if (!extractedData.nationality) {
                 extractedData.nationality = country;
+                console.log("Found nationality:", extractedData.nationality);
             }
             
             // If we haven't found country of residence yet, use this
             if (!extractedData.countryOfResidence) {
                 extractedData.countryOfResidence = country;
+                console.log("Found country of residence:", extractedData.countryOfResidence);
             }
         }
     }
+    
+    // Log the final extracted data
+    console.log("Final extracted data:", extractedData);
     
     return extractedData;
 }
@@ -3177,30 +3257,39 @@ function parseCompanyDocumentText(text) {
         taxNumber: ''
     };
     
+    // Log the raw text for debugging
+    console.log("Raw company document text:", text.substring(0, 500) + "...");
+    
+    // Split text into lines for line-by-line analysis
+    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+    
     // Extract company name
     const companyNamePatterns = [
         /company name[:\s]+([A-Za-z0-9\s.,'&-]+)(?=\n|reg|inc)/i,
         /name of (?:the )?company[:\s]+([A-Za-z0-9\s.,'&-]+)(?=\n|reg|inc)/i,
-        /registered as[:\s]+([A-Za-z0-9\s.,'&-]+)(?=\n|reg|inc)/i
+        /registered as[:\s]+([A-Za-z0-9\s.,'&-]+)(?=\n|reg|inc)/i,
+        /business name[:\s]+([A-Za-z0-9\s.,'&-]+)/i,
+        /corporate name[:\s]+([A-Za-z0-9\s.,'&-]+)/i
     ];
     
     for (const pattern of companyNamePatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.companyName = match[1].trim();
+            console.log("Found company name:", extractedData.companyName);
             break;
         }
     }
     
     // If no company name found yet, try to find the first line that might be a company name
     if (!extractedData.companyName) {
-        const lines = text.split('\n');
         for (const line of lines) {
             const trimmed = line.trim();
             // Look for lines that might be company names (capitalized, contains common company suffixes)
             if (/^[A-Z]/.test(trimmed) && 
                 /(?:LLC|Inc|Ltd|Limited|Corporation|Corp|Company|Co\.|GmbH|SA|SRL|BV)/.test(trimmed)) {
                 extractedData.companyName = trimmed;
+                console.log("Found potential company name from line:", trimmed);
                 break;
             }
         }
@@ -3209,13 +3298,16 @@ function parseCompanyDocumentText(text) {
     // Extract registration number
     const regNoPatterns = [
         /(?:registration|company|reg\.?) (?:no|num|number)[:\s#]+([A-Z0-9-]+)/i,
-        /(?:registration|company|reg\.?)[:\s#]+([A-Z0-9-]+)/i
+        /(?:registration|company|reg\.?)[:\s#]+([A-Z0-9-]+)/i,
+        /(?:business|commercial) register[:\s#]+([A-Z0-9-]+)/i,
+        /company (?:id|identifier)[:\s#]+([A-Z0-9-]+)/i
     ];
     
     for (const pattern of regNoPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.registrationNumber = match[1].trim();
+            console.log("Found registration number:", extractedData.registrationNumber);
             break;
         }
     }
@@ -3224,7 +3316,8 @@ function parseCompanyDocumentText(text) {
     const incDatePatterns = [
         /(?:incorporation|established|founded|registered) (?:date|on)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
         /(?:incorporation|established|founded|registered) (?:date|on)[:\s]+([A-Za-z]+\s+[0-9]{1,2},?\s+[0-9]{2,4})/i,
-        /(?:date of incorporation|date of registration)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
+        /(?:date of incorporation|date of registration)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+        /(?:incorporation|established|founded|registered)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
     ];
     
     for (const pattern of incDatePatterns) {
@@ -3238,8 +3331,10 @@ function parseCompanyDocumentText(text) {
                 } else {
                     extractedData.incorporationDate = match[1].trim();
                 }
+                console.log("Found incorporation date:", extractedData.incorporationDate);
             } catch (e) {
                 extractedData.incorporationDate = match[1].trim();
+                console.log("Found incorporation date (raw):", extractedData.incorporationDate);
             }
             break;
         }
@@ -3248,13 +3343,16 @@ function parseCompanyDocumentText(text) {
     // Extract business nature/activity
     const businessPatterns = [
         /(?:nature of business|business activity|principal activity)[:\s]+([A-Za-z0-9\s.,'-]+)(?=\n)/i,
-        /(?:business type|company type|business nature)[:\s]+([A-Za-z0-9\s.,'-]+)(?=\n)/i
+        /(?:business type|company type|business nature)[:\s]+([A-Za-z0-9\s.,'-]+)(?=\n)/i,
+        /(?:business|activity|sector)[:\s]+([A-Za-z0-9\s.,'-]+)/i,
+        /(?:main|primary) business[:\s]+([A-Za-z0-9\s.,'-]+)/i
     ];
     
     for (const pattern of businessPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.businessNature = match[1].trim();
+            console.log("Found business nature:", extractedData.businessNature);
             break;
         }
     }
@@ -3262,13 +3360,16 @@ function parseCompanyDocumentText(text) {
     // Extract registered address
     const addressPatterns = [
         /(?:registered|business|principal|corporate) address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i,
-        /address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i
+        /address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i,
+        /(?:headquarters|main office)[:\s]+([A-Za-z0-9\s.,#'-]+)/i,
+        /(?:location|premises)[:\s]+([A-Za-z0-9\s.,#'-]+)/i
     ];
     
     for (const pattern of addressPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.registeredAddress = match[1].trim();
+            console.log("Found registered address:", extractedData.registeredAddress);
             break;
         }
     }
@@ -3278,6 +3379,7 @@ function parseCompanyDocumentText(text) {
     const emailMatch = text.match(emailPattern);
     if (emailMatch) {
         extractedData.contactEmail = emailMatch[0];
+        console.log("Found email:", extractedData.contactEmail);
     }
     
     // Extract phone number
@@ -3290,6 +3392,7 @@ function parseCompanyDocumentText(text) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.contactPhone = match[1].trim().replace(/\s+/g, '');
+            console.log("Found phone number:", extractedData.contactPhone);
             break;
         }
     }
@@ -3311,6 +3414,7 @@ function parseCompanyDocumentText(text) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.postalCode = match[1].trim();
+            console.log("Found postal code:", extractedData.postalCode);
             break;
         }
     }
@@ -3318,16 +3422,21 @@ function parseCompanyDocumentText(text) {
     // Extract tax number
     const taxPatterns = [
         /(?:tax|vat|tin|ein) (?:no|num|number|id|identification)[:\s#]+([A-Z0-9-]+)/i,
-        /(?:tax|vat|tin|ein)[:\s#]+([A-Z0-9-]+)/i
+        /(?:tax|vat|tin|ein)[:\s#]+([A-Z0-9-]+)/i,
+        /(?:fiscal code|tax code)[:\s#]+([A-Z0-9-]+)/i
     ];
     
     for (const pattern of taxPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
             extractedData.taxNumber = match[1].trim();
+            console.log("Found tax number:", extractedData.taxNumber);
             break;
         }
     }
+    
+    // Log the final extracted data
+    console.log("Final extracted company data:", extractedData);
     
     return extractedData;
 }
