@@ -9,6 +9,8 @@ const fetch = require('node-fetch');
 const multer = require('multer');
 const path = require('path');
 require('dotenv').config();
+const Tesseract = require('tesseract.js');
+const pdfParse = require('pdf-parse');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -159,7 +161,7 @@ async function processDataChunk(chunk, url) {
                         await processBatch(batch, url);
                     }
                     resolve();
-                } catch (error) {
+    } catch (error) {
                     reject(error);
                 }
             },
@@ -2850,32 +2852,43 @@ app.post('/analyze-document', requireAuth, upload.single('document'), async (req
         }
 
         const documentType = req.body.documentType || 'image';
+        const filePath = req.file.path;
         console.log(`Processing ${documentType} document: ${req.file.originalname}`);
         
-        // In a real implementation, you would send this to an OCR service
-        // For now, we'll simulate document analysis with a delay
+        let extractedText = '';
+        let extractedData = {};
         
-        // Wait for 2 seconds to simulate processing
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // Return simulated extracted data
-        const extractedData = {
-            fullName: documentType === 'pdf' ? 'John PDF Doe' : 'John Image Doe',
-            dateOfBirth: '1990-01-15',
-            nationality: 'US',
-            countryOfResidence: 'US',
-            nationalIdNumber: 'ID12345678',
-            nationalIdExpiry: '2025-10-20',
-            passportNumber: 'P98765432',
-            passportExpiry: '2028-05-18',
-            address: '123 Main Street',
-            city: 'New York',
-            zipCode: '10001',
-            contactNumber: '2125551234',
-            email: 'john.doe@example.com'
-        };
-        
-        res.json(extractedData);
+        try {
+            // Process based on file type
+            if (documentType === 'pdf') {
+                // Extract text from PDF
+                const dataBuffer = fs.readFileSync(filePath);
+                const pdfData = await pdfParse(dataBuffer);
+                extractedText = pdfData.text;
+                
+                console.log("PDF text extracted successfully");
+            } else {
+                // Use OCR for images
+                const result = await Tesseract.recognize(
+                    filePath,
+                    'eng', // language
+                    { logger: m => console.log(m) } // log progress
+                );
+                extractedText = result.data.text;
+                
+                console.log("Image OCR completed successfully");
+            }
+            
+            // Parse the extracted text to find common patterns
+            extractedData = parseIndividualDocumentText(extractedText);
+            
+            console.log("Data extraction completed:", extractedData);
+            
+            res.json(extractedData);
+        } catch (processingError) {
+            console.error('Error processing document:', processingError);
+            res.status(500).json({ message: 'Error analyzing document', error: processingError.message });
+        }
     } catch (error) {
         console.error('Document analysis error:', error);
         res.status(500).json({ message: 'Error analyzing document' });
@@ -2890,34 +2903,434 @@ app.post('/analyze-company-document', requireAuth, upload.single('document'), as
         }
 
         const documentType = req.body.documentType || 'image';
+        const filePath = req.file.path;
         console.log(`Processing company ${documentType} document: ${req.file.originalname}`);
         
-        // In a real implementation, you would send this to an OCR service
-        // For now, we'll simulate document analysis with a delay
+        let extractedText = '';
+        let extractedData = {};
         
-        // Wait for 2 seconds to simulate processing
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // Return simulated extracted data
-        const extractedData = {
-            companyName: documentType === 'pdf' ? 'Acme Corporation PDF' : 'Acme Corporation',
-            registrationNumber: 'REG123456789',
-            incorporationDate: '2015-03-22',
-            businessNature: 'Technology Services',
-            registeredAddress: '456 Business Avenue, Suite 789',
-            city: 'San Francisco',
-            postalCode: '94105',
-            contactEmail: 'info@acmecorp.com',
-            contactPhone: '4155557890',
-            taxNumber: 'TAX987654321'
-        };
-        
-        res.json(extractedData);
+        try {
+            // Process based on file type
+            if (documentType === 'pdf') {
+                // Extract text from PDF
+                const dataBuffer = fs.readFileSync(filePath);
+                const pdfData = await pdfParse(dataBuffer);
+                extractedText = pdfData.text;
+                
+                console.log("PDF text extracted successfully");
+            } else {
+                // Use OCR for images
+                const result = await Tesseract.recognize(
+                    filePath,
+                    'eng', // language
+                    { logger: m => console.log(m) } // log progress
+                );
+                extractedText = result.data.text;
+                
+                console.log("Image OCR completed successfully");
+            }
+            
+            // Parse the extracted text to find common patterns
+            extractedData = parseCompanyDocumentText(extractedText);
+            
+            console.log("Data extraction completed:", extractedData);
+            
+            res.json(extractedData);
+        } catch (processingError) {
+            console.error('Error processing document:', processingError);
+            res.status(500).json({ message: 'Error analyzing document', error: processingError.message });
+        }
     } catch (error) {
         console.error('Company document analysis error:', error);
-        res.status(500).json({ message: 'Error analyzing company document' });
+        res.status(500).json({ message: 'Error analyzing document' });
     }
 });
+
+// Helper function to log customer activities
+async function logCustomerActivity(activityData) {
+    try {
+        const {
+            customer_id,
+            customer_name,
+            actor,
+            actor_type,
+            action,
+            purpose,
+            timestamp,
+            legal_basis = 'Legitimate interest'
+        } = activityData;
+        
+        await pool.execute(
+            `INSERT INTO customer_activities (
+                customer_id, 
+                customer_name, 
+                actor, 
+                actor_type, 
+                action, 
+                purpose, 
+                timestamp, 
+                legal_basis
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                customer_id,
+                customer_name,
+                actor,
+                actor_type,
+                action,
+                purpose,
+                timestamp || new Date(),
+                legal_basis
+            ]
+        );
+        
+        return true;
+    } catch (error) {
+        console.error('Error logging customer activity:', error);
+        return false;
+    }
+}
+
+// Helper functions to parse extracted text
+function parseIndividualDocumentText(text) {
+    // Initialize extracted data with default empty values
+    const extractedData = {
+        fullName: '',
+        dateOfBirth: '',
+        nationality: '',
+        countryOfResidence: '',
+        nationalIdNumber: '',
+        nationalIdExpiry: '',
+        passportNumber: '',
+        passportExpiry: '',
+        address: '',
+        city: '',
+        zipCode: '',
+        contactNumber: '',
+        email: ''
+    };
+    
+    // Convert text to lowercase for case-insensitive matching
+    const lowerText = text.toLowerCase();
+    
+    // Extract full name - look for common patterns
+    const namePatterns = [
+        /name[:\s]+([A-Za-z\s.'-]+)/i,
+        /full name[:\s]+([A-Za-z\s.'-]+)/i,
+        /([A-Za-z\s.'-]+)\s+(?=dob|date of birth|birth|born)/i
+    ];
+    
+    for (const pattern of namePatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.fullName = match[1].trim();
+            break;
+        }
+    }
+    
+    // Extract date of birth
+    const dobPatterns = [
+        /(?:date of birth|dob|born on)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+        /(?:date of birth|dob|born on)[:\s]+([A-Za-z]+\s+[0-9]{1,2},?\s+[0-9]{2,4})/i
+    ];
+    
+    for (const pattern of dobPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            // Try to convert to YYYY-MM-DD format
+            try {
+                const date = new Date(match[1]);
+                if (!isNaN(date.getTime())) {
+                    extractedData.dateOfBirth = date.toISOString().split('T')[0];
+                } else {
+                    extractedData.dateOfBirth = match[1].trim();
+                }
+            } catch (e) {
+                extractedData.dateOfBirth = match[1].trim();
+            }
+            break;
+        }
+    }
+    
+    // Extract passport number
+    const passportPatterns = [
+        /passport[:\s#]+([A-Z0-9]+)/i,
+        /passport number[:\s]+([A-Z0-9]+)/i
+    ];
+    
+    for (const pattern of passportPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.passportNumber = match[1].trim();
+            break;
+        }
+    }
+    
+    // Extract ID number
+    const idPatterns = [
+        /(?:id|identification|national id)[:\s#]+([A-Z0-9]+)/i,
+        /(?:id|identification|national id) number[:\s]+([A-Z0-9]+)/i
+    ];
+    
+    for (const pattern of idPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.nationalIdNumber = match[1].trim();
+            break;
+        }
+    }
+    
+    // Extract address
+    const addressPatterns = [
+        /address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i,
+        /(?:residential|permanent) address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i
+    ];
+    
+    for (const pattern of addressPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.address = match[1].trim();
+            break;
+        }
+    }
+    
+    // Extract email
+    const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/;
+    const emailMatch = text.match(emailPattern);
+    if (emailMatch) {
+        extractedData.email = emailMatch[0];
+    }
+    
+    // Extract phone number
+    const phonePatterns = [
+        /(?:phone|tel|telephone|contact)[:\s]+([0-9+\-\(\)\s]{7,})/i,
+        /\b(\+?[0-9]{1,3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{4})\b/
+    ];
+    
+    for (const pattern of phonePatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.contactNumber = match[1].trim().replace(/\s+/g, '');
+            break;
+        }
+    }
+    
+    // Extract city
+    const cityPattern = /city[:\s]+([A-Za-z\s.'-]+)/i;
+    const cityMatch = text.match(cityPattern);
+    if (cityMatch && cityMatch[1]) {
+        extractedData.city = cityMatch[1].trim();
+    }
+    
+    // Extract zip/postal code
+    const zipPatterns = [
+        /(?:zip|postal|post)[:\s]+([A-Z0-9\s-]+)/i,
+        /(?:zip|postal|post) code[:\s]+([A-Z0-9\s-]+)/i
+    ];
+    
+    for (const pattern of zipPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.zipCode = match[1].trim();
+            break;
+        }
+    }
+    
+    // Try to guess nationality and country of residence
+    const countryPatterns = [
+        /nationality[:\s]+([A-Za-z\s]+)/i,
+        /citizen(?:ship)? of[:\s]+([A-Za-z\s]+)/i,
+        /country[:\s]+([A-Za-z\s]+)/i
+    ];
+    
+    for (const pattern of countryPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            const country = match[1].trim();
+            
+            // If we haven't found nationality yet, use this
+            if (!extractedData.nationality) {
+                extractedData.nationality = country;
+            }
+            
+            // If we haven't found country of residence yet, use this
+            if (!extractedData.countryOfResidence) {
+                extractedData.countryOfResidence = country;
+            }
+        }
+    }
+    
+    return extractedData;
+}
+
+function parseCompanyDocumentText(text) {
+    // Initialize extracted data with default empty values
+    const extractedData = {
+        companyName: '',
+        registrationNumber: '',
+        incorporationDate: '',
+        businessNature: '',
+        registeredAddress: '',
+        city: '',
+        postalCode: '',
+        contactEmail: '',
+        contactPhone: '',
+        taxNumber: ''
+    };
+    
+    // Extract company name
+    const companyNamePatterns = [
+        /company name[:\s]+([A-Za-z0-9\s.,'&-]+)(?=\n|reg|inc)/i,
+        /name of (?:the )?company[:\s]+([A-Za-z0-9\s.,'&-]+)(?=\n|reg|inc)/i,
+        /registered as[:\s]+([A-Za-z0-9\s.,'&-]+)(?=\n|reg|inc)/i
+    ];
+    
+    for (const pattern of companyNamePatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.companyName = match[1].trim();
+            break;
+        }
+    }
+    
+    // If no company name found yet, try to find the first line that might be a company name
+    if (!extractedData.companyName) {
+        const lines = text.split('\n');
+        for (const line of lines) {
+            const trimmed = line.trim();
+            // Look for lines that might be company names (capitalized, contains common company suffixes)
+            if (/^[A-Z]/.test(trimmed) && 
+                /(?:LLC|Inc|Ltd|Limited|Corporation|Corp|Company|Co\.|GmbH|SA|SRL|BV)/.test(trimmed)) {
+                extractedData.companyName = trimmed;
+                break;
+            }
+        }
+    }
+    
+    // Extract registration number
+    const regNoPatterns = [
+        /(?:registration|company|reg\.?) (?:no|num|number)[:\s#]+([A-Z0-9-]+)/i,
+        /(?:registration|company|reg\.?)[:\s#]+([A-Z0-9-]+)/i
+    ];
+    
+    for (const pattern of regNoPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.registrationNumber = match[1].trim();
+            break;
+        }
+    }
+    
+    // Extract incorporation date
+    const incDatePatterns = [
+        /(?:incorporation|established|founded|registered) (?:date|on)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+        /(?:incorporation|established|founded|registered) (?:date|on)[:\s]+([A-Za-z]+\s+[0-9]{1,2},?\s+[0-9]{2,4})/i,
+        /(?:date of incorporation|date of registration)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
+    ];
+    
+    for (const pattern of incDatePatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            // Try to convert to YYYY-MM-DD format
+            try {
+                const date = new Date(match[1]);
+                if (!isNaN(date.getTime())) {
+                    extractedData.incorporationDate = date.toISOString().split('T')[0];
+                } else {
+                    extractedData.incorporationDate = match[1].trim();
+                }
+            } catch (e) {
+                extractedData.incorporationDate = match[1].trim();
+            }
+            break;
+        }
+    }
+    
+    // Extract business nature/activity
+    const businessPatterns = [
+        /(?:nature of business|business activity|principal activity)[:\s]+([A-Za-z0-9\s.,'-]+)(?=\n)/i,
+        /(?:business type|company type|business nature)[:\s]+([A-Za-z0-9\s.,'-]+)(?=\n)/i
+    ];
+    
+    for (const pattern of businessPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.businessNature = match[1].trim();
+            break;
+        }
+    }
+    
+    // Extract registered address
+    const addressPatterns = [
+        /(?:registered|business|principal|corporate) address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i,
+        /address[:\s]+([A-Za-z0-9\s.,#'-]+)(?=\n|city|zip|postal)/i
+    ];
+    
+    for (const pattern of addressPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.registeredAddress = match[1].trim();
+            break;
+        }
+    }
+    
+    // Extract email
+    const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/;
+    const emailMatch = text.match(emailPattern);
+    if (emailMatch) {
+        extractedData.contactEmail = emailMatch[0];
+    }
+    
+    // Extract phone number
+    const phonePatterns = [
+        /(?:phone|tel|telephone|contact)[:\s]+([0-9+\-\(\)\s]{7,})/i,
+        /\b(\+?[0-9]{1,3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{4})\b/
+    ];
+    
+    for (const pattern of phonePatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.contactPhone = match[1].trim().replace(/\s+/g, '');
+            break;
+        }
+    }
+    
+    // Extract city
+    const cityPattern = /city[:\s]+([A-Za-z\s.'-]+)/i;
+    const cityMatch = text.match(cityPattern);
+    if (cityMatch && cityMatch[1]) {
+        extractedData.city = cityMatch[1].trim();
+    }
+    
+    // Extract zip/postal code
+    const zipPatterns = [
+        /(?:zip|postal|post)[:\s]+([A-Z0-9\s-]+)/i,
+        /(?:zip|postal|post) code[:\s]+([A-Z0-9\s-]+)/i
+    ];
+    
+    for (const pattern of zipPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.postalCode = match[1].trim();
+            break;
+        }
+    }
+    
+    // Extract tax number
+    const taxPatterns = [
+        /(?:tax|vat|tin|ein) (?:no|num|number|id|identification)[:\s#]+([A-Z0-9-]+)/i,
+        /(?:tax|vat|tin|ein)[:\s#]+([A-Z0-9-]+)/i
+    ];
+    
+    for (const pattern of taxPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            extractedData.taxNumber = match[1].trim();
+            break;
+        }
+    }
+    
+    return extractedData;
+}
 
 // --- Self-Link Onboarding Endpoints ---
 app.post('/registerIndividualSelfLink', requireAuth, checkAndConsumeCredit, async (req, res) => {
