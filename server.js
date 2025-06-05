@@ -1919,13 +1919,210 @@ app.get('/api/profile/:id', requireAuth, async (req, res) => {
                 productTypeOffered: individual.product_type_offered,
                 productOffered: individual.product_offered,
                 companyName: individual.company_name,
-                positionInCompany: individual.position_in_company
+                positionInCompany: individual.position_in_company,
+                status: individual.status,
+                onboardedAt: individual.onboarded_at,
+                onboardedBy: individual.onboarded_by,
+                approvedAt: individual.approved_at,
+                approvedBy: individual.approved_by,
+                rejectedAt: individual.rejected_at,
+                rejectedBy: individual.rejected_by
             };
+            
+            // Fetch activities for this customer
+            try {
+                const [activities] = await pool.execute(
+                    `SELECT * FROM customer_activities 
+                     WHERE customer_name = ? 
+                     ORDER BY timestamp DESC`,
+                    [profile.fullName]
+                );
+                
+                if (activities && activities.length > 0) {
+                    profile.activities = activities;
+                }
+            } catch (activityError) {
+                console.error('Error fetching customer activities:', activityError);
+                // Continue without activities if there's an error
+            }
         }
         
         return res.json(profile);
     } catch (error) {
         console.error('Error fetching profile:', error);
+        return res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// New endpoint to get customer activities
+app.get('/api/customer/:id/activities', requireAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // First get the customer name from either individualob or companyob
+        let customerName;
+        
+        // Try individualob first
+        const [individualResult] = await pool.execute(
+            'SELECT full_name FROM individualob WHERE id = ?',
+            [id]
+        );
+        
+        if (individualResult.length > 0) {
+            customerName = individualResult[0].full_name;
+        } else {
+            // Try companyob if not found in individualob
+            const [companyResult] = await pool.execute(
+                'SELECT company_name FROM companyob WHERE id = ?',
+                [id]
+            );
+            
+            if (companyResult.length > 0) {
+                customerName = companyResult[0].company_name;
+            } else {
+                return res.status(404).json({ message: 'Customer not found' });
+            }
+        }
+        
+        // Fetch activities for this customer
+        const [activities] = await pool.execute(
+            `SELECT * FROM customer_activities 
+             WHERE customer_name = ? 
+             ORDER BY timestamp DESC`,
+            [customerName]
+        );
+        
+        // If no activities found in the dedicated table, try to create some from timestamps
+        if (activities.length === 0) {
+            const generatedActivities = [];
+            
+            // Check individualob for timestamps
+            const [individualData] = await pool.execute(
+                'SELECT * FROM individualob WHERE id = ? OR full_name = ?',
+                [id, customerName]
+            );
+            
+            if (individualData.length > 0) {
+                const individual = individualData[0];
+                
+                // Add onboarding activity if timestamp exists
+                if (individual.onboarded_at) {
+                    generatedActivities.push({
+                        id: 'onboarding',
+                        customer_id: individual.id,
+                        customer_name: individual.full_name,
+                        actor: individual.onboarded_by || 'System',
+                        actor_type: individual.onboarded_by ? 'admin' : 'system',
+                        action: 'Registered new customer into the system.',
+                        purpose: 'Customer Onboarding',
+                        timestamp: individual.onboarded_at,
+                        legal_basis: 'Legitimate interest',
+                        retention_period: 'Logs retained for 7 years, auto-deleted thereafter'
+                    });
+                }
+                
+                // Add approval activity if timestamp exists
+                if (individual.approved_at) {
+                    generatedActivities.push({
+                        id: 'approval',
+                        customer_id: individual.id,
+                        customer_name: individual.full_name,
+                        actor: individual.approved_by || 'System',
+                        actor_type: individual.approved_by ? 'admin' : 'system',
+                        action: 'Customer profile approved.',
+                        purpose: 'Account management',
+                        timestamp: individual.approved_at,
+                        legal_basis: 'Legitimate interest',
+                        retention_period: 'Logs retained for 7 years, auto-deleted thereafter'
+                    });
+                }
+                
+                // Add rejection activity if timestamp exists
+                if (individual.rejected_at) {
+                    generatedActivities.push({
+                        id: 'rejection',
+                        customer_id: individual.id,
+                        customer_name: individual.full_name,
+                        actor: individual.rejected_by || 'System',
+                        actor_type: individual.rejected_by ? 'admin' : 'system',
+                        action: 'Customer profile rejected.',
+                        purpose: 'Account management',
+                        timestamp: individual.rejected_at,
+                        legal_basis: 'Legitimate interest',
+                        retention_period: 'Logs retained for 7 years, auto-deleted thereafter'
+                    });
+                }
+                
+                return res.json(generatedActivities);
+            }
+            
+            // Check companyob for timestamps if no individual found
+            const [companyData] = await pool.execute(
+                'SELECT * FROM companyob WHERE id = ? OR company_name = ?',
+                [id, customerName]
+            );
+            
+            if (companyData.length > 0) {
+                const company = companyData[0];
+                
+                // Add onboarding activity if timestamp exists
+                if (company.onboarded_at) {
+                    generatedActivities.push({
+                        id: 'onboarding',
+                        customer_id: company.id,
+                        customer_name: company.company_name,
+                        actor: company.onboarded_by || 'System',
+                        actor_type: company.onboarded_by ? 'admin' : 'system',
+                        action: 'Registered new company into the system.',
+                        purpose: 'Customer Onboarding',
+                        timestamp: company.onboarded_at,
+                        legal_basis: 'Legitimate interest',
+                        retention_period: 'Logs retained for 7 years, auto-deleted thereafter'
+                    });
+                }
+                
+                // Add approval activity if timestamp exists
+                if (company.approved_at) {
+                    generatedActivities.push({
+                        id: 'approval',
+                        customer_id: company.id,
+                        customer_name: company.company_name,
+                        actor: company.approved_by || 'System',
+                        actor_type: company.approved_by ? 'admin' : 'system',
+                        action: 'Company profile approved.',
+                        purpose: 'Account management',
+                        timestamp: company.approved_at,
+                        legal_basis: 'Legitimate interest',
+                        retention_period: 'Logs retained for 7 years, auto-deleted thereafter'
+                    });
+                }
+                
+                // Add rejection activity if timestamp exists
+                if (company.rejected_at) {
+                    generatedActivities.push({
+                        id: 'rejection',
+                        customer_id: company.id,
+                        customer_name: company.company_name,
+                        actor: company.rejected_by || 'System',
+                        actor_type: company.rejected_by ? 'admin' : 'system',
+                        action: 'Company profile rejected.',
+                        purpose: 'Account management',
+                        timestamp: company.rejected_at,
+                        legal_basis: 'Legitimate interest',
+                        retention_period: 'Logs retained for 7 years, auto-deleted thereafter'
+                    });
+                }
+                
+                return res.json(generatedActivities);
+            }
+            
+            // If no activities could be generated
+            return res.json([]);
+        }
+        
+        return res.json(activities);
+    } catch (error) {
+        console.error('Error fetching customer activities:', error);
         return res.status(500).json({ message: 'Server error' });
     }
 });
