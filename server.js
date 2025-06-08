@@ -1323,10 +1323,9 @@ app.post('/api/registerCompany', requireAuth, checkAndConsumeCredit, async (req,
                 user_id, company_name, registration_number, company_type,
                 incorporation_date, business_nature, industry_sector,
                 annual_turnover, employee_count, website_url,
-                registered_address, operating_address, country,
-                state, city, postal_code, contact_person_name,
-                contact_email, contact_phone, tax_number,
-                regulatory_licenses, onboarded_at, onboarded_by
+                registered_address, operating_address, country, state,
+                city, postal_code, contact_person_name, contact_email, contact_phone,
+                tax_number, regulatory_licenses, onboarded_at, onboarded_by
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
@@ -2844,6 +2843,23 @@ app.post('/api/subscription/purchase', requireAuth, async (req, res) => {
 });
 
 // --- Document Analysis Endpoints ---
+
+// Get available OCR languages
+app.get('/api/ocr-languages', requireAuth, (req, res) => {
+    try {
+        // Get all available languages from the language config function
+        const languages = Object.entries(getLanguageConfig()).map(([code, config]) => ({
+            code,
+            name: config.name
+        }));
+        
+        res.json({ languages });
+    } catch (error) {
+        console.error('Error fetching OCR languages:', error);
+        res.status(500).json({ message: 'Error fetching OCR languages' });
+    }
+});
+
 app.post('/api/analyze-document', requireAuth, upload.single('document'), async (req, res) => {
     try {
         // Check if file was uploaded
@@ -2853,10 +2869,16 @@ app.post('/api/analyze-document', requireAuth, upload.single('document'), async 
 
         const documentType = req.body.documentType || 'image';
         const filePath = req.file.path;
-        console.log(`Processing ${documentType} document: ${req.file.originalname}`);
+        // Get language preference from request, default to English
+        const language = req.body.language || 'eng';
+        // Check if auto-detection is requested
+        const autoDetectLanguage = req.body.autoDetectLanguage === 'true' || req.body.autoDetectLanguage === true;
+        
+        console.log(`Processing ${documentType} document: ${req.file.originalname} with language: ${autoDetectLanguage ? 'auto-detect' : language}`);
         
         let extractedText = '';
         let extractedData = {};
+        let detectedLanguage = null;
         
         try {
             // Process based on file type
@@ -2867,16 +2889,85 @@ app.post('/api/analyze-document', requireAuth, upload.single('document'), async 
                 extractedText = pdfData.text;
                 
                 console.log("PDF text extracted successfully");
+                
+                // Try to detect language from extracted text if auto-detect is enabled
+                if (autoDetectLanguage && extractedText) {
+                    detectedLanguage = await detectTextLanguage(extractedText);
+                    console.log(`Auto-detected language from PDF: ${detectedLanguage}`);
+                }
             } else {
-                // Use OCR for images
+                // Preprocess image before OCR to improve accuracy
+                const preprocessedImagePath = await preprocessImage(filePath);
+                
+                // If auto-detect is enabled, first run OCR with osd only to detect script/language
+                if (autoDetectLanguage) {
+                    try {
+                        console.log("Auto-detecting language from image...");
+                        const osdConfig = {
+                            tessedit_ocr_engine_mode: '0', // OSD only mode
+                            logger: m => console.log(m)
+                        };
+                        
+                        const osdResult = await Tesseract.recognize(
+                            preprocessedImagePath || filePath,
+                            'osd', // OSD language pack
+                            osdConfig
+                        );
+                        
+                        // Extract the detected script info
+                        if (osdResult.data && osdResult.data.osd) {
+                            const scriptInfo = osdResult.data.osd;
+                            console.log("Script detection result:", scriptInfo);
+                            
+                            // Map detected script to language code
+                            detectedLanguage = mapScriptToLanguage(scriptInfo.script);
+                            console.log(`Detected script: ${scriptInfo.script}, mapped to language: ${detectedLanguage}`);
+                        }
+                    } catch (osdError) {
+                        console.warn("Language auto-detection failed:", osdError.message);
+                        console.log("Falling back to specified language:", language);
+                        detectedLanguage = language;
+                    }
+                }
+                
+                // Get language configuration for OCR - use detected language if available
+                const langConfig = getLanguageConfig(detectedLanguage || language);
+                
+                // Define Tesseract configuration for improved accuracy
+                const config = {
+                    lang: langConfig.tesseractCode,
+                    // Set DPI to optimal value for OCR
+                    tessedit_char_whitelist: langConfig.charWhitelist,
+                    // Improve image processing
+                    tessjs_create_hocr: '0',
+                    tessjs_create_tsv: '0',
+                    // Set PSM mode to automatic page segmentation with OSD
+                    tessjs_create_box: '0',
+                    tessjs_create_unlv: '0',
+                    tessjs_create_osd: '0',
+                    tessedit_pageseg_mode: '1',
+                    tessedit_ocr_engine_mode: '2', // Use LSTM neural network only
+                    preserve_interword_spaces: '1',
+                    user_defined_dpi: '300',
+                    textord_tabfind_find_tables: '1',
+                    logger: m => console.log(m) // log progress
+                };
+                
+                console.log(`Starting OCR with enhanced configuration for language: ${langConfig.name}...`);
+                
+                // Use OCR for images with improved configuration
                 const result = await Tesseract.recognize(
-                    filePath,
-                    'eng', // language
-                    { logger: m => console.log(m) } // log progress
+                    preprocessedImagePath || filePath,
+                    langConfig.tesseractCode, // language code
+                    config
                 );
+                
                 extractedText = result.data.text;
                 
-                console.log("Image OCR completed successfully");
+                // Apply post-processing to improve text quality
+                extractedText = postprocessOcrText(extractedText, langConfig.language);
+                
+                console.log("Image OCR completed successfully with enhanced accuracy");
             }
             
             // Parse the extracted text to find common patterns
@@ -2884,7 +2975,11 @@ app.post('/api/analyze-document', requireAuth, upload.single('document'), async 
             
             console.log("Data extraction completed:", extractedData);
             
-            res.json(extractedData);
+            // Add language detection info to response
+            res.json({
+                ...extractedData,
+                detectedLanguage: detectedLanguage || language
+            });
         } catch (processingError) {
             console.error('Error processing document:', processingError);
             res.status(500).json({ message: 'Error analyzing document', error: processingError.message });
@@ -2904,10 +2999,16 @@ app.post('/api/analyze-company-document', requireAuth, upload.single('document')
 
         const documentType = req.body.documentType || 'image';
         const filePath = req.file.path;
-        console.log(`Processing company ${documentType} document: ${req.file.originalname}`);
+        // Get language preference from request, default to English
+        const language = req.body.language || 'eng';
+        // Check if auto-detection is requested
+        const autoDetectLanguage = req.body.autoDetectLanguage === 'true' || req.body.autoDetectLanguage === true;
+        
+        console.log(`Processing company ${documentType} document: ${req.file.originalname} with language: ${autoDetectLanguage ? 'auto-detect' : language}`);
         
         let extractedText = '';
         let extractedData = {};
+        let detectedLanguage = null;
         
         try {
             // Process based on file type
@@ -2918,16 +3019,85 @@ app.post('/api/analyze-company-document', requireAuth, upload.single('document')
                 extractedText = pdfData.text;
                 
                 console.log("PDF text extracted successfully");
+                
+                // Try to detect language from extracted text if auto-detect is enabled
+                if (autoDetectLanguage && extractedText) {
+                    detectedLanguage = await detectTextLanguage(extractedText);
+                    console.log(`Auto-detected language from PDF: ${detectedLanguage}`);
+                }
             } else {
-                // Use OCR for images
+                // Preprocess image before OCR to improve accuracy
+                const preprocessedImagePath = await preprocessImage(filePath);
+                
+                // If auto-detect is enabled, first run OCR with osd only to detect script/language
+                if (autoDetectLanguage) {
+                    try {
+                        console.log("Auto-detecting language from image...");
+                        const osdConfig = {
+                            tessedit_ocr_engine_mode: '0', // OSD only mode
+                            logger: m => console.log(m)
+                        };
+                        
+                        const osdResult = await Tesseract.recognize(
+                            preprocessedImagePath || filePath,
+                            'osd', // OSD language pack
+                            osdConfig
+                        );
+                        
+                        // Extract the detected script info
+                        if (osdResult.data && osdResult.data.osd) {
+                            const scriptInfo = osdResult.data.osd;
+                            console.log("Script detection result:", scriptInfo);
+                            
+                            // Map detected script to language code
+                            detectedLanguage = mapScriptToLanguage(scriptInfo.script);
+                            console.log(`Detected script: ${scriptInfo.script}, mapped to language: ${detectedLanguage}`);
+                        }
+                    } catch (osdError) {
+                        console.warn("Language auto-detection failed:", osdError.message);
+                        console.log("Falling back to specified language:", language);
+                        detectedLanguage = language;
+                    }
+                }
+                
+                // Get language configuration for OCR - use detected language if available
+                const langConfig = getLanguageConfig(detectedLanguage || language);
+                
+                // Define Tesseract configuration for improved accuracy
+                const config = {
+                    lang: langConfig.tesseractCode,
+                    // Set DPI to optimal value for OCR
+                    tessedit_char_whitelist: langConfig.charWhitelist,
+                    // Improve image processing
+                    tessjs_create_hocr: '0',
+                    tessjs_create_tsv: '0',
+                    // Set PSM mode to automatic page segmentation with OSD
+                    tessjs_create_box: '0',
+                    tessjs_create_unlv: '0',
+                    tessjs_create_osd: '0',
+                    tessedit_pageseg_mode: '1',
+                    tessedit_ocr_engine_mode: '2', // Use LSTM neural network only
+                    preserve_interword_spaces: '1',
+                    user_defined_dpi: '300',
+                    textord_tabfind_find_tables: '1',
+                    logger: m => console.log(m) // log progress
+                };
+                
+                console.log(`Starting OCR with enhanced configuration for language: ${langConfig.name}...`);
+                
+                // Use OCR for images with improved configuration
                 const result = await Tesseract.recognize(
-                    filePath,
-                    'eng', // language
-                    { logger: m => console.log(m) } // log progress
+                    preprocessedImagePath || filePath,
+                    langConfig.tesseractCode, // language code
+                    config
                 );
+                
                 extractedText = result.data.text;
                 
-                console.log("Image OCR completed successfully");
+                // Apply post-processing to improve text quality
+                extractedText = postprocessOcrText(extractedText, langConfig.language);
+                
+                console.log("Image OCR completed successfully with enhanced accuracy");
             }
             
             // Parse the extracted text to find common patterns
@@ -2935,7 +3105,11 @@ app.post('/api/analyze-company-document', requireAuth, upload.single('document')
             
             console.log("Data extraction completed:", extractedData);
             
-            res.json(extractedData);
+            // Add language detection info to response
+            res.json({
+                ...extractedData,
+                detectedLanguage: detectedLanguage || language
+            });
         } catch (processingError) {
             console.error('Error processing document:', processingError);
             res.status(500).json({ message: 'Error analyzing document', error: processingError.message });
@@ -2945,6 +3119,259 @@ app.post('/api/analyze-company-document', requireAuth, upload.single('document')
         res.status(500).json({ message: 'Error analyzing document' });
     }
 });
+
+// Function to get language configuration for OCR
+function getLanguageConfig(langCode) {
+    // Default whitelist for Latin-based languages
+    const defaultWhitelist = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,;:-_()[]{}\'"/\\@#$%&*+<>!?= ';
+    
+    // Language configurations
+    const languages = {
+        'eng': {
+            name: 'English',
+            tesseractCode: 'eng',
+            language: 'english',
+            charWhitelist: defaultWhitelist
+        },
+        'ara': {
+            name: 'Arabic',
+            tesseractCode: 'ara',
+            language: 'arabic',
+            charWhitelist: defaultWhitelist + 'ابتثجحخدذرزسشصضطظعغفقكلمنهويءآأؤإئ'
+        },
+        'chi_sim': {
+            name: 'Chinese (Simplified)',
+            tesseractCode: 'chi_sim',
+            language: 'chinese',
+            charWhitelist: defaultWhitelist
+        },
+        'chi_tra': {
+            name: 'Chinese (Traditional)',
+            tesseractCode: 'chi_tra',
+            language: 'chinese',
+            charWhitelist: defaultWhitelist
+        },
+        'fra': {
+            name: 'French',
+            tesseractCode: 'fra',
+            language: 'french',
+            charWhitelist: defaultWhitelist + 'àâäæçéèêëîïôœùûüÿÀÂÄÆÇÉÈÊËÎÏÔŒÙÛÜŸ'
+        },
+        'deu': {
+            name: 'German',
+            tesseractCode: 'deu',
+            language: 'german',
+            charWhitelist: defaultWhitelist + 'äöüßÄÖÜ'
+        },
+        'hin': {
+            name: 'Hindi',
+            tesseractCode: 'hin',
+            language: 'hindi',
+            charWhitelist: defaultWhitelist
+        },
+        'ita': {
+            name: 'Italian',
+            tesseractCode: 'ita',
+            language: 'italian',
+            charWhitelist: defaultWhitelist + 'àèéìíîòóùúÀÈÉÌÍÎÒÓÙÚ'
+        },
+        'jpn': {
+            name: 'Japanese',
+            tesseractCode: 'jpn',
+            language: 'japanese',
+            charWhitelist: defaultWhitelist
+        },
+        'kor': {
+            name: 'Korean',
+            tesseractCode: 'kor',
+            language: 'korean',
+            charWhitelist: defaultWhitelist
+        },
+        'rus': {
+            name: 'Russian',
+            tesseractCode: 'rus',
+            language: 'russian',
+            charWhitelist: defaultWhitelist + 'абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ'
+        },
+        'spa': {
+            name: 'Spanish',
+            tesseractCode: 'spa',
+            language: 'spanish',
+            charWhitelist: defaultWhitelist + 'áéíóúüñÁÉÍÓÚÜÑ¿¡'
+        },
+        'urd': {
+            name: 'Urdu',
+            tesseractCode: 'urd',
+            language: 'urdu',
+            charWhitelist: defaultWhitelist
+        }
+    };
+    
+    // If no language code is provided, return the entire language configuration object
+    if (!langCode) {
+        return languages;
+    }
+    
+    // Return the requested language config or default to English
+    return languages[langCode] || languages['eng'];
+}
+
+// Image preprocessing function to improve OCR accuracy
+async function preprocessImage(inputPath) {
+    try {
+        // Require image processing libraries
+        const { promisify } = require('util');
+        const exec = promisify(require('child_process').exec);
+        const path = require('path');
+        
+        // Create output path with _processed suffix
+        const outputPath = inputPath.replace(/(\.[^.]+)$/, '_processed$1');
+        
+        console.log(`Preprocessing image: ${inputPath} -> ${outputPath}`);
+        
+        // Use ImageMagick for preprocessing if available
+        try {
+            // Check if ImageMagick is installed
+            await exec('convert -version');
+            
+            // Apply a series of image processing operations to improve OCR accuracy:
+            // 1. Convert to grayscale
+            // 2. Add border (helps with edge detection)
+            // 3. Increase contrast
+            // 4. Remove noise
+            // 5. Deskew (straighten) the image
+            // 6. Set to 300 DPI (optimal for OCR)
+            const command = `convert "${inputPath}" -colorspace gray -bordercolor White -border 10x10 -contrast-stretch 2%x98% -level 20%,80%,1 -deskew 40% -density 300 -sharpen 0x1 "${outputPath}"`;
+            
+            await exec(command);
+            console.log('Image preprocessing completed successfully');
+            return outputPath;
+        } catch (error) {
+            console.warn('ImageMagick not available or preprocessing failed:', error.message);
+            console.log('Falling back to original image');
+            return inputPath;
+        }
+    } catch (error) {
+        console.error('Error during image preprocessing:', error);
+        return inputPath; // Return original path if preprocessing fails
+    }
+}
+
+// Post-processing function to clean up common OCR errors
+function postprocessOcrText(text, language = 'english') {
+    if (!text) return '';
+    
+    // Common OCR error corrections
+    let processedText = text
+        // Fix common character confusions
+        .replace(/[¡|]/g, 'I') // Replace ¡ or | with I
+        .replace(/[¢]/g, 'c')  // Replace ¢ with c
+        .replace(/[£]/g, 'E')  // Replace £ with E
+        .replace(/[¥]/g, 'Y')  // Replace ¥ with Y
+        .replace(/[§]/g, 'S')  // Replace § with S
+        .replace(/[©]/g, 'c')  // Replace © with c
+        .replace(/[®]/g, 'R')  // Replace ® with R
+        .replace(/[°]/g, '0')  // Replace ° with 0
+        .replace(/[±]/g, '+')  // Replace ± with +
+        .replace(/[µ]/g, 'u')  // Replace µ with u
+        .replace(/[¿]/g, '?')  // Replace ¿ with ?
+        .replace(/[—]/g, '-')  // Replace em dash with hyphen
+        .replace(/[–]/g, '-')  // Replace en dash with hyphen
+        .replace(/['']/g, "'") // Replace curly quotes with straight quotes
+        .replace(/[""]/g, '"') // Replace curly double quotes with straight quotes
+        
+        // Fix common spacing issues
+        .replace(/\s+/g, ' ')  // Replace multiple spaces with a single space
+        
+        // Fix common number/letter confusions
+        .replace(/(\b)0(\b)/g, 'O') // Replace standalone 0 with O
+        .replace(/(\b)1(\b)/g, 'I') // Replace standalone 1 with I
+        .replace(/(\b)5(\b)/g, 'S') // Replace standalone 5 with S
+        .replace(/(\b)8(\b)/g, 'B') // Replace standalone 8 with B
+        
+        // Fix common date formats
+        .replace(/(\d{1,2})[.,](\d{1,2})[.,](\d{2,4})/g, '$1/$2/$3'); // Replace periods/commas in dates with slashes
+    
+    // Apply language-specific corrections
+    switch (language.toLowerCase()) {
+        case 'spanish':
+            processedText = processedText
+                .replace(/n~/g, 'ñ')
+                .replace(/N~/g, 'Ñ')
+                .replace(/(\b)a(\b)/g, 'á') // Common error in Spanish OCR
+                .replace(/(\b)e(\b)/g, 'é')
+                .replace(/(\b)o(\b)/g, 'ó');
+            break;
+        
+        case 'french':
+            processedText = processedText
+                .replace(/a`/g, 'à')
+                .replace(/e`/g, 'è')
+                .replace(/e'/g, 'é')
+                .replace(/c,/g, 'ç')
+                .replace(/A`/g, 'À')
+                .replace(/E`/g, 'È')
+                .replace(/E'/g, 'É')
+                .replace(/C,/g, 'Ç');
+            break;
+            
+        case 'german':
+            processedText = processedText
+                .replace(/a"/g, 'ä')
+                .replace(/o"/g, 'ö')
+                .replace(/u"/g, 'ü')
+                .replace(/A"/g, 'Ä')
+                .replace(/O"/g, 'Ö')
+                .replace(/U"/g, 'Ü')
+                .replace(/ss/g, 'ß'); // Common OCR error for German
+            break;
+            
+        case 'arabic':
+            // Fix common Arabic OCR errors
+            processedText = processedText
+                .replace(/\s+/g, ' ')  // Arabic has specific spacing issues
+                .replace(/[٠١٢٣٤٥٦٧٨٩]/g, function(m) {
+                    return String.fromCharCode(m.charCodeAt(0) - 1632 + 48); // Convert Arabic numerals to Latin
+                });
+            break;
+            
+        case 'russian':
+            // Fix common Cyrillic OCR errors
+            processedText = processedText
+                .replace(/bl/g, 'ы') // Common confusion in Cyrillic
+                .replace(/bI/g, 'ы')
+                .replace(/I0/g, 'ю')
+                .replace(/I-0/g, 'ю');
+            break;
+            
+        case 'chinese':
+        case 'japanese':
+        case 'korean':
+            // For CJK languages, focus on improving spacing and punctuation
+            processedText = processedText
+                .replace(/\s+/g, '') // Remove unnecessary spaces in CJK text
+                .replace(/．/g, '.') // Normalize full-width punctuation
+                .replace(/，/g, ',')
+                .replace(/：/g, ':')
+                .replace(/；/g, ';')
+                .replace(/！/g, '!')
+                .replace(/？/g, '?');
+            break;
+    }
+    
+    // Remove excessive line breaks
+    processedText = processedText.replace(/\n{3,}/g, '\n\n');
+    
+    // Final cleanup for all languages
+    processedText = processedText
+        .replace(/^\s+|\s+$/g, '') // Trim leading/trailing whitespace
+        .replace(/\s+\./g, '.') // Fix spacing before periods
+        .replace(/\s+,/g, ',') // Fix spacing before commas
+        .replace(/\s+:/g, ':') // Fix spacing before colons
+        .replace(/\s+;/g, ';'); // Fix spacing before semicolons
+    
+    return processedText;
+}
 
 // Helper function to log customer activities
 async function logCustomerActivity(activityData) {
@@ -3561,3 +3988,75 @@ app.post('/api/registerCompanySelfLink', requireAuth, checkAndConsumeCredit, asy
 app.listen(port, () => {
     console.log(`🚀 Server running on port ${port}`);
 });
+
+// Helper function to detect language from text
+async function detectTextLanguage(text) {
+    try {
+        // This is a simple language detection based on character frequency
+        // For production, consider using a proper language detection library
+        
+        // Count characters by script groups
+        const latinChars = (text.match(/[a-zA-Z]/g) || []).length;
+        const cyrillicChars = (text.match(/[а-яА-ЯёЁ]/g) || []).length;
+        const arabicChars = (text.match(/[\u0600-\u06FF]/g) || []).length;
+        const chineseChars = (text.match(/[\u4E00-\u9FFF]/g) || []).length;
+        const japaneseChars = (text.match(/[\u3040-\u309F\u30A0-\u30FF]/g) || []).length;
+        const koreanChars = (text.match(/[\uAC00-\uD7AF\u1100-\u11FF]/g) || []).length;
+        const devanagariChars = (text.match(/[\u0900-\u097F]/g) || []).length;
+        
+        // Get the script with the highest character count
+        const scripts = [
+            { script: 'latin', count: latinChars },
+            { script: 'cyrillic', count: cyrillicChars },
+            { script: 'arabic', count: arabicChars },
+            { script: 'chinese', count: chineseChars },
+            { script: 'japanese', count: japaneseChars },
+            { script: 'korean', count: koreanChars },
+            { script: 'devanagari', count: devanagariChars }
+        ];
+        
+        scripts.sort((a, b) => b.count - a.count);
+        
+        // If the dominant script is Latin, try to determine specific Latin-based language
+        if (scripts[0].script === 'latin' && latinChars > 0) {
+            // Count specific character patterns for different Latin-based languages
+            const spanishChars = (text.match(/[áéíóúüñ]/gi) || []).length;
+            const frenchChars = (text.match(/[àâäæçéèêëîïôœùûüÿ]/gi) || []).length;
+            const germanChars = (text.match(/[äöüß]/gi) || []).length;
+            const italianChars = (text.match(/[àèéìíîòóùú]/gi) || []).length;
+            
+            const latinLanguages = [
+                { lang: 'eng', count: latinChars - (spanishChars + frenchChars + germanChars + italianChars) },
+                { lang: 'spa', count: spanishChars },
+                { lang: 'fra', count: frenchChars },
+                { lang: 'deu', count: germanChars },
+                { lang: 'ita', count: italianChars }
+            ];
+            
+            latinLanguages.sort((a, b) => b.count - a.count);
+            
+            return latinLanguages[0].lang;
+        }
+        
+        // Map the dominant script to a language code
+        return mapScriptToLanguage(scripts[0].script);
+    } catch (error) {
+        console.error('Error detecting language:', error);
+        return 'eng'; // Default to English on error
+    }
+}
+
+// Helper function to map script to language code
+function mapScriptToLanguage(script) {
+    const scriptToLang = {
+        'latin': 'eng',
+        'cyrillic': 'rus',
+        'arabic': 'ara',
+        'chinese': 'chi_sim',
+        'japanese': 'jpn',
+        'korean': 'kor',
+        'devanagari': 'hin'
+    };
+    
+    return scriptToLang[script.toLowerCase()] || 'eng';
+}
