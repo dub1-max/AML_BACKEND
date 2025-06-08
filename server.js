@@ -3443,222 +3443,369 @@ function parseIndividualDocumentText(text) {
     const lowerText = text.toLowerCase();
     const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
     
-    // Extract full name - look for common patterns
-    const namePatterns = [
-        /name[:\s]+([A-Za-z\s.'-]+)/i,
-        /full name[:\s]+([A-Za-z\s.'-]+)/i,
-        /([A-Za-z\s.'-]+)\s+(?=dob|date of birth|birth|born)/i,
-        /surname[:\s]+([A-Za-z\s.'-]+)/i,
-        /given name[s]?[:\s]+([A-Za-z\s.'-]+)/i
-    ];
+    // Check if this is a UAE ID card
+    const isUaeIdCard = text.includes('United Arab Emirates') && 
+                       (text.includes('Identity Card') || text.includes('ID Card'));
     
-    // Try to find name in the text
-    for (const pattern of namePatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            extractedData.fullName = match[1].trim();
-            console.log("Found name:", extractedData.fullName);
-            break;
+    // Special handling for UAE ID cards
+    if (isUaeIdCard) {
+        console.log("Detected UAE ID Card - using specialized extraction");
+        
+        // Extract full name - UAE ID format often has "Name: [Full Name]" or similar pattern
+        const uaeNamePatterns = [
+            /Name[;:\s]+([A-Za-z\s.'-]+)/i,
+            /Name[;:\s]+([A-Za-z\s.'-]+)\s+[A-Za-z]+/i,  // Capture name before nationality/other field
+            /Name[;:\s]+([^0-9\n]+?)(?=Nation|Date|ID)/i  // Capture until next field
+        ];
+        
+        for (const pattern of uaeNamePatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.fullName = match[1].trim();
+                console.log("Found UAE card name:", extractedData.fullName);
+                break;
+            }
+        }
+        
+        // If name not found with patterns, try to find it from specific lines
+        if (!extractedData.fullName) {
+            // In UAE ID cards, the name often appears after "Name:" or similar text
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].toLowerCase().includes('name')) {
+                    // Name might be on this line or the next
+                    const nameLine = lines[i].replace(/name[;:\s]*/i, '').trim();
+                    if (nameLine && nameLine.length > 3) {
+                        extractedData.fullName = nameLine;
+                        console.log("Found UAE card name from line:", extractedData.fullName);
+                        break;
+                    } else if (i + 1 < lines.length) {
+                        // Check next line if this line only has "Name:"
+                        extractedData.fullName = lines[i + 1].trim();
+                        console.log("Found UAE card name from next line:", extractedData.fullName);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Extract UAE ID number - format is typically XXX-YYYY-ZZZZZZZ-Z
+        const uaeIdPatterns = [
+            /(\d{3}-\d{4}-\d{7}-\d)/,  // Standard UAE ID format
+            /ID[:\s#]*(\d{3}-\d{4}-\d{7}-\d)/i,
+            /Number[:\s#]*(\d{3}-\d{4}-\d{7}-\d)/i,
+            /(\d{3}[-\s]?\d{4}[-\s]?\d{7}[-\s]?\d)/  // More flexible pattern
+        ];
+        
+        for (const pattern of uaeIdPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.nationalIdNumber = match[1].trim();
+                console.log("Found UAE ID number:", extractedData.nationalIdNumber);
+                break;
+            }
+        }
+        
+        // Extract nationality - for UAE cards, it's often explicitly stated
+        if (text.includes('Nationality:')) {
+            const nationalityMatch = text.match(/Nationality[:\s]+([A-Za-z\s]+)/i);
+            if (nationalityMatch && nationalityMatch[1]) {
+                extractedData.nationality = nationalityMatch[1].trim();
+                // Also use as country of residence if not found separately
+                extractedData.countryOfResidence = extractedData.nationality;
+                console.log("Found UAE card nationality:", extractedData.nationality);
+            }
+        }
+        
+        // Extract date of birth - UAE format may be different
+        const uaeDobPatterns = [
+            /Date of Birth[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+            /DOB[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+            /Birth Date[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
+        ];
+        
+        for (const pattern of uaeDobPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                try {
+                    const date = new Date(match[1]);
+                    if (!isNaN(date.getTime())) {
+                        extractedData.dateOfBirth = date.toISOString().split('T')[0];
+                    } else {
+                        extractedData.dateOfBirth = match[1].trim();
+                    }
+                    console.log("Found UAE card DOB:", extractedData.dateOfBirth);
+                } catch (e) {
+                    extractedData.dateOfBirth = match[1].trim();
+                }
+                break;
+            }
+        }
+        
+        // Extract expiry date
+        const uaeExpiryPatterns = [
+            /Expiry[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+            /Valid Until[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+            /Expiration[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
+        ];
+        
+        for (const pattern of uaeExpiryPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                try {
+                    const date = new Date(match[1]);
+                    if (!isNaN(date.getTime())) {
+                        extractedData.nationalIdExpiry = date.toISOString().split('T')[0];
+                    } else {
+                        extractedData.nationalIdExpiry = match[1].trim();
+                    }
+                    console.log("Found UAE card expiry:", extractedData.nationalIdExpiry);
+                } catch (e) {
+                    extractedData.nationalIdExpiry = match[1].trim();
+                }
+                break;
+            }
+        }
+    } else {
+        // Standard extraction for non-UAE ID documents
+        // Extract full name - look for common patterns
+        const namePatterns = [
+            /name[:\s]+([A-Za-z\s.'-]+)/i,
+            /full name[:\s]+([A-Za-z\s.'-]+)/i,
+            /([A-Za-z\s.'-]+)\s+(?=dob|date of birth|birth|born)/i,
+            /surname[:\s]+([A-Za-z\s.'-]+)/i,
+            /given name[s]?[:\s]+([A-Za-z\s.'-]+)/i
+        ];
+        
+        // Try to find name in the text
+        for (const pattern of namePatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.fullName = match[1].trim();
+                console.log("Found name:", extractedData.fullName);
+                break;
+            }
+        }
+        
+        // If no name found yet, try looking for lines that might contain names
+        if (!extractedData.fullName) {
+            for (const line of lines) {
+                if (line.match(/^[A-Z][a-z]+ [A-Z][a-z]+$/)) {
+                    // Looks like a "FirstName LastName" format
+                    extractedData.fullName = line;
+                    console.log("Found potential name from line:", line);
+                    break;
+                }
+            }
         }
     }
     
-    // If no name found yet, try looking for lines that might contain names
-    if (!extractedData.fullName) {
-        for (const line of lines) {
-            if (line.match(/^[A-Z][a-z]+ [A-Z][a-z]+$/)) {
-                // Looks like a "FirstName LastName" format
-                extractedData.fullName = line;
-                console.log("Found potential name from line:", line);
+    // Common extraction for all document types - these will run regardless of document type
+    // but will only overwrite values if they haven't been set by document-specific extraction
+    
+    // Extract date of birth if not already found
+    if (!extractedData.dateOfBirth) {
+        const dobPatterns = [
+            /(?:date of birth|dob|born on|birth date)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+            /(?:date of birth|dob|born on|birth date)[:\s]+([A-Za-z]+\s+[0-9]{1,2},?\s+[0-9]{2,4})/i,
+            /dob[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+            /birth[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
+        ];
+        
+        for (const pattern of dobPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                try {
+                    const date = new Date(match[1]);
+                    if (!isNaN(date.getTime())) {
+                        extractedData.dateOfBirth = date.toISOString().split('T')[0];
+                    } else {
+                        extractedData.dateOfBirth = match[1].trim();
+                    }
+                    console.log("Found DOB:", extractedData.dateOfBirth);
+                } catch (e) {
+                    extractedData.dateOfBirth = match[1].trim();
+                    console.log("Found DOB (raw):", extractedData.dateOfBirth);
+                }
                 break;
             }
         }
     }
     
-    // Extract date of birth
-    const dobPatterns = [
-        /(?:date of birth|dob|born on|birth date)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
-        /(?:date of birth|dob|born on|birth date)[:\s]+([A-Za-z]+\s+[0-9]{1,2},?\s+[0-9]{2,4})/i,
-        /dob[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
-        /birth[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
-    ];
-    
-    for (const pattern of dobPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            // Try to convert to YYYY-MM-DD format
-            try {
-                const date = new Date(match[1]);
-                if (!isNaN(date.getTime())) {
-                    extractedData.dateOfBirth = date.toISOString().split('T')[0];
-                } else {
-                    extractedData.dateOfBirth = match[1].trim();
-                }
-                console.log("Found DOB:", extractedData.dateOfBirth);
-            } catch (e) {
-                extractedData.dateOfBirth = match[1].trim();
-                console.log("Found DOB (raw):", extractedData.dateOfBirth);
+    // Extract passport number if not already found
+    if (!extractedData.passportNumber) {
+        const passportPatterns = [
+            /passport[:\s#]+([A-Z0-9]+)/i,
+            /passport number[:\s]+([A-Z0-9]+)/i,
+            /passport no[:\s\.]+([A-Z0-9]+)/i,
+            /document number[:\s]+([A-Z0-9]+)/i
+        ];
+        
+        for (const pattern of passportPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.passportNumber = match[1].trim();
+                console.log("Found passport number:", extractedData.passportNumber);
+                break;
             }
-            break;
         }
     }
     
-    // Extract passport number
-    const passportPatterns = [
-        /passport[:\s#]+([A-Z0-9]+)/i,
-        /passport number[:\s]+([A-Z0-9]+)/i,
-        /passport no[:\s\.]+([A-Z0-9]+)/i,
-        /document number[:\s]+([A-Z0-9]+)/i
-    ];
-    
-    for (const pattern of passportPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            extractedData.passportNumber = match[1].trim();
-            console.log("Found passport number:", extractedData.passportNumber);
-            break;
-        }
-    }
-    
-    // Extract passport expiry
-    const passportExpiryPatterns = [
-        /(?:passport expiry|expiry date|date of expiry|expiration)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
-        /(?:valid until|valid to|expiry)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
-        /(?:expiry|exp)[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
-    ];
-    
-    for (const pattern of passportExpiryPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            try {
-                const date = new Date(match[1]);
-                if (!isNaN(date.getTime())) {
-                    extractedData.passportExpiry = date.toISOString().split('T')[0];
-                } else {
+    // Extract passport expiry if not already found
+    if (!extractedData.passportExpiry) {
+        const passportExpiryPatterns = [
+            /(?:passport expiry|expiry date|date of expiry|expiration)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+            /(?:valid until|valid to|expiry)[:\s]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i,
+            /(?:expiry|exp)[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i
+        ];
+        
+        for (const pattern of passportExpiryPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                try {
+                    const date = new Date(match[1]);
+                    if (!isNaN(date.getTime())) {
+                        extractedData.passportExpiry = date.toISOString().split('T')[0];
+                    } else {
+                        extractedData.passportExpiry = match[1].trim();
+                    }
+                    console.log("Found passport expiry:", extractedData.passportExpiry);
+                } catch (e) {
                     extractedData.passportExpiry = match[1].trim();
+                    console.log("Found passport expiry (raw):", extractedData.passportExpiry);
                 }
-                console.log("Found passport expiry:", extractedData.passportExpiry);
-            } catch (e) {
-                extractedData.passportExpiry = match[1].trim();
-                console.log("Found passport expiry (raw):", extractedData.passportExpiry);
+                break;
             }
-            break;
         }
     }
     
-    // Extract ID number
-    const idPatterns = [
-        /(?:id|identification|national id)[:\s#]+([A-Z0-9-]+)/i,
-        /(?:id|identification|national id) number[:\s]+([A-Z0-9-]+)/i,
-        /(?:identity card|id card)[:\s#]+([A-Z0-9-]+)/i,
-        /(?:identity no|id no)[:\s\.]+([A-Z0-9-]+)/i
-    ];
-    
-    for (const pattern of idPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            extractedData.nationalIdNumber = match[1].trim();
-            console.log("Found ID number:", extractedData.nationalIdNumber);
-            break;
-        }
-    }
-    
-    // Extract address
-    const addressPatterns = [
-        /address[:\s]+([A-Za-z0-9\s.,#'\-]+)(?=\n|city|zip|postal)/i,
-        /(?:residential|permanent) address[:\s]+([A-Za-z0-9\s.,#'\-]+)(?=\n|city|zip|postal)/i,
-        /(?:street|location)[:\s]+([A-Za-z0-9\s.,#'\-]+)/i
-    ];
-    
-    for (const pattern of addressPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            extractedData.address = match[1].trim();
-            console.log("Found address:", extractedData.address);
-            break;
-        }
-    }
-    
-    // Extract email - look for any email pattern in the text
-    const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/;
-    const emailMatch = text.match(emailPattern);
-    if (emailMatch) {
-        extractedData.email = emailMatch[0];
-        console.log("Found email:", extractedData.email);
-    }
-    
-    // Extract phone number
-    const phonePatterns = [
-        /(?:phone|tel|telephone|contact|mobile)[:\s]+([0-9+\-\(\)\s]{7,})/i,
-        /\b(\+?[0-9]{1,3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{4})\b/,
-        /(?:phone|tel|telephone|contact|mobile)[:\s]*([0-9+\-\(\)\s]{7,})/i
-    ];
-    
-    for (const pattern of phonePatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            extractedData.contactNumber = match[1].trim().replace(/\s+/g, '');
-            console.log("Found phone number:", extractedData.contactNumber);
-            break;
-        }
-    }
-    
-    // Extract city
-    const cityPatterns = [
-        /city[:\s]+([A-Za-z\s.'\-]+)/i,
-        /town[:\s]+([A-Za-z\s.'\-]+)/i,
-        /(?:city|town)[:\s]*([A-Za-z\s.'\-]+)/i,
-        /(?:municipality|district)[:\s]+([A-Za-z\s.'-]+)/i
-    ];
-    
-    for (const pattern of cityPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            extractedData.city = match[1].trim();
-            console.log("Found city:", extractedData.city);
-            break;
-        }
-    }
-    
-    // Extract zip/postal code
-    const zipPatterns = [
-        /(?:zip|postal|post)[:\s]+([A-Z0-9\s-]+)/i,
-        /(?:zip|postal|post) code[:\s]+([A-Z0-9\s-]+)/i,
-        /(?:zip|postal|post)[:\s]*([A-Z0-9\s-]+)/i
-    ];
-    
-    for (const pattern of zipPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            extractedData.zipCode = match[1].trim();
-            console.log("Found zip code:", extractedData.zipCode);
-            break;
-        }
-    }
-    
-    // Try to guess nationality and country of residence
-    const countryPatterns = [
-        /nationality[:\s]+([A-Za-z\s]+)/i,
-        /citizen(?:ship)? of[:\s]+([A-Za-z\s]+)/i,
-        /country[:\s]+([A-Za-z\s]+)/i,
-        /nationality[:\s]*([A-Za-z\s]+)/i,
-        /citizen(?:ship)?[:\s]*([A-Za-z\s]+)/i
-    ];
-    
-    for (const pattern of countryPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-            const country = match[1].trim();
-            
-            // If we haven't found nationality yet, use this
-            if (!extractedData.nationality) {
-                extractedData.nationality = country;
-                console.log("Found nationality:", extractedData.nationality);
+    // Extract ID number if not already found
+    if (!extractedData.nationalIdNumber) {
+        const idPatterns = [
+            /(?:id|identification|national id)[:\s#]+([A-Z0-9-]+)/i,
+            /(?:id|identification|national id) number[:\s]+([A-Z0-9-]+)/i,
+            /(?:identity card|id card)[:\s#]+([A-Z0-9-]+)/i,
+            /(?:identity no|id no)[:\s\.]+([A-Z0-9-]+)/i
+        ];
+        
+        for (const pattern of idPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.nationalIdNumber = match[1].trim();
+                console.log("Found ID number:", extractedData.nationalIdNumber);
+                break;
             }
-            
-            // If we haven't found country of residence yet, use this
-            if (!extractedData.countryOfResidence) {
-                extractedData.countryOfResidence = country;
-                console.log("Found country of residence:", extractedData.countryOfResidence);
+        }
+    }
+    
+    // Extract address if not already found
+    if (!extractedData.address) {
+        const addressPatterns = [
+            /address[:\s]+([A-Za-z0-9\s.,#'\-]+)(?=\n|city|zip|postal)/i,
+            /(?:residential|permanent) address[:\s]+([A-Za-z0-9\s.,#'\-]+)(?=\n|city|zip|postal)/i,
+            /(?:street|location)[:\s]+([A-Za-z0-9\s.,#'\-]+)/i
+        ];
+        
+        for (const pattern of addressPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.address = match[1].trim();
+                console.log("Found address:", extractedData.address);
+                break;
+            }
+        }
+    }
+    
+    // Extract email if not already found
+    if (!extractedData.email) {
+        const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/;
+        const emailMatch = text.match(emailPattern);
+        if (emailMatch) {
+            extractedData.email = emailMatch[0];
+            console.log("Found email:", extractedData.email);
+        }
+    }
+    
+    // Extract phone number if not already found
+    if (!extractedData.contactNumber) {
+        const phonePatterns = [
+            /(?:phone|tel|telephone|contact|mobile)[:\s]+([0-9+\-\(\)\s]{7,})/i,
+            /\b(\+?[0-9]{1,3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{3}[\s\-]?[0-9]{4})\b/,
+            /(?:phone|tel|telephone|contact|mobile)[:\s]*([0-9+\-\(\)\s]{7,})/i
+        ];
+        
+        for (const pattern of phonePatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.contactNumber = match[1].trim().replace(/\s+/g, '');
+                console.log("Found phone number:", extractedData.contactNumber);
+                break;
+            }
+        }
+    }
+    
+    // Extract city if not already found
+    if (!extractedData.city) {
+        const cityPatterns = [
+            /city[:\s]+([A-Za-z\s.'\-]+)/i,
+            /town[:\s]+([A-Za-z\s.'\-]+)/i,
+            /(?:city|town)[:\s]*([A-Za-z\s.'\-]+)/i,
+            /(?:municipality|district)[:\s]+([A-Za-z\s.'-]+)/i
+        ];
+        
+        for (const pattern of cityPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.city = match[1].trim();
+                console.log("Found city:", extractedData.city);
+                break;
+            }
+        }
+    }
+    
+    // Extract zip/postal code if not already found
+    if (!extractedData.zipCode) {
+        const zipPatterns = [
+            /(?:zip|postal|post)[:\s]+([A-Z0-9\s-]+)/i,
+            /(?:zip|postal|post) code[:\s]+([A-Z0-9\s-]+)/i,
+            /(?:zip|postal|post)[:\s]*([A-Z0-9\s-]+)/i
+        ];
+        
+        for (const pattern of zipPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                extractedData.zipCode = match[1].trim();
+                console.log("Found zip code:", extractedData.zipCode);
+                break;
+            }
+        }
+    }
+    
+    // Try to guess nationality and country of residence if not already found
+    if (!extractedData.nationality || !extractedData.countryOfResidence) {
+        const countryPatterns = [
+            /nationality[:\s]+([A-Za-z\s]+)/i,
+            /citizen(?:ship)? of[:\s]+([A-Za-z\s]+)/i,
+            /country[:\s]+([A-Za-z\s]+)/i,
+            /nationality[:\s]*([A-Za-z\s]+)/i,
+            /citizen(?:ship)?[:\s]*([A-Za-z\s]+)/i
+        ];
+        
+        for (const pattern of countryPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+                const country = match[1].trim();
+                
+                // If we haven't found nationality yet, use this
+                if (!extractedData.nationality) {
+                    extractedData.nationality = country;
+                    console.log("Found nationality:", extractedData.nationality);
+                }
+                
+                // If we haven't found country of residence yet, use this
+                if (!extractedData.countryOfResidence) {
+                    extractedData.countryOfResidence = country;
+                    console.log("Found country of residence:", extractedData.countryOfResidence);
+                }
             }
         }
     }
