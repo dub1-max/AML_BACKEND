@@ -23,35 +23,26 @@ const ALLOWED_ORIGINS = [
     'https://www.kycsync.com',
 ];
 
+// --- CORS and Session Configuration ---
 app.use(cors({
-    origin: function(origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl requests)
-        if (!origin) return callback(null, true);
-        
-        if (ALLOWED_ORIGINS.indexOf(origin) === -1) {
-            var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-            return callback(new Error(msg), false);
-        }
-        return callback(null, true);
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Accept'],
+    origin: ['https://kycsync.com', 'http://kycsync.com', 'http://localhost:3000'],
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json());
-
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'your-super-secret-key', // Use a strong secret in production
+    secret: process.env.SESSION_SECRET || 'your-secret-key',
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: process.env.NODE_ENV === 'production' || process.env.HTTPS === 'true', // Use secure cookies in production or when HTTPS is enabled
+        secure: process.env.NODE_ENV === 'production',
         httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24, // Cookie expiration time (e.g., 24 hours)
-        sameSite: 'lax', // Recommended for security
-    },
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    }
 }));
+
+app.use(express.json());
 
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
@@ -693,26 +684,60 @@ const recordProfileCredit = async (req, res, next) => {
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name, role } = req.body;
+        
+        // Validate required fields
         if (!email || !password || !name || !role) {
-            return res.status(400).json({ message: 'Missing required fields' });
+            return res.status(400).json({ 
+                message: 'Missing required fields',
+                details: {
+                    email: !email ? 'Email is required' : null,
+                    password: !password ? 'Password is required' : null,
+                    name: !name ? 'Name is required' : null,
+                    role: !role ? 'Role is required' : null
+                }
+            });
         }
 
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ message: 'Invalid email format' });
+        }
+
+        // Validate password length
+        if (password.length < 6) {
+            return res.status(400).json({ message: 'Password must be at least 6 characters long' });
+        }
+
+        // Check if user already exists
         const [existingUser] = await pool.execute('SELECT * FROM users WHERE email = ?', [email]);
         if (existingUser.length > 0) {
-            return res.status(409).json({ message: 'User already exists' });
+            return res.status(409).json({ message: 'This email is already registered' });
         }
 
+        // Hash password and create user
         const hashedPassword = await bcrypt.hash(password, 10);
         const [result] = await pool.execute(
             'INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, ?)',
-            [email, hashedPassword, name, role]
+            [email.toLowerCase(), hashedPassword, name, role]
         );
 
-        res.status(201).json({ message: 'User registered successfully', userId: result.insertId });
+        // Return success response
+        res.status(201).json({ 
+            message: 'User registered successfully',
+            userId: result.insertId
+        });
 
     } catch (error) {
         console.error('Registration error:', error);
-        res.status(500).json({ message: 'Internal server error' });
+        // Send more specific error messages based on the error type
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: 'This email is already registered' });
+        }
+        res.status(500).json({ 
+            message: 'Registration failed. Please try again later.',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 });
 
