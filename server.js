@@ -4112,39 +4112,16 @@ app.post('/api/registerCompanySelfLink', requireAuth, checkAndConsumeCredit, asy
         // Store the company data in the database similar to regular company onboarding
         // but also include information about the uploaded document
         
-        // Validate required fields
-        if (!formData.companyName || !formData.contactEmail) {
-            return res.status(400).json({ message: 'Company name and contact email are required' });
-        }
-
-        // Validate email format
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(formData.contactEmail)) {
-            return res.status(400).json({ message: 'Invalid email format' });
-        }
-
-        // Check if email already exists
-        const [existingEmails] = await pool.execute(
-            'SELECT contact_email FROM companyob WHERE contact_email = ?',
-            [formData.contactEmail]
-        );
-
-        if (existingEmails.length > 0) {
-            return res.status(409).json({ message: 'Contact email already registered.' });
-        }
-
         const [result] = await pool.execute(
             `INSERT INTO companyob (
-                user_id, company_name, registration_number, company_type,
-                incorporation_date, business_nature, industry_sector,
-                annual_turnover, employee_count, website_url,
-                registered_address, operating_address, country, state,
+                company_name, registration_number, company_type, incorporation_date,
+                business_nature, industry_sector, annual_turnover, employee_count,
+                website_url, registered_address, operating_address, country, state,
                 city, postal_code, contact_person_name, contact_email, contact_phone,
                 tax_number, regulatory_licenses, onboarded_by, onboarded_at,
                 document_type, has_uploaded_document
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 1)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 1)`,
             [
-                userId, // Add user_id from session
                 formData.companyName, formData.registrationNumber, formData.companyType,
                 formData.incorporationDate, formData.businessNature, formData.industrySector,
                 formData.annualTurnover, formData.employeeCount, formData.websiteUrl,
