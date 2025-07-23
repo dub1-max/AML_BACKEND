@@ -611,18 +611,15 @@ const checkAndConsumeCredit = async (req, res, next) => {
 
     // Check if profile has EVER been tracked before (even if inactive now)
     try {
-        // Only check tracking if we have a name parameter
-        if (req.params.name) {
-            const [trackingRows] = await pool.execute(
-                `SELECT * FROM user_tracking 
-                 WHERE user_id = ? AND name = ?`,
-                [req.session.user.id, req.params.name]
-            );
-            
-            // If the profile has been tracked before (even if currently inactive), don't charge again
-            if (trackingRows.length > 0) {
-                return next();
-            }
+        const [trackingRows] = await pool.execute(
+            `SELECT * FROM user_tracking 
+             WHERE user_id = ? AND name = ?`,
+            [req.session.user.id, req.params.name]
+        );
+        
+        // If the profile has been tracked before (even if currently inactive), don't charge again
+        if (trackingRows.length > 0) {
+            return next();
         }
     } catch (error) {
         console.error('Error checking existing tracking:', error);
@@ -664,9 +661,7 @@ const checkAndConsumeCredit = async (req, res, next) => {
         await connection.commit();
         
         // Store the profile name in the request for later use
-        if (!req.profileName) {
-            req.profileName = req.body.name || req.body.fullName || req.params.name || 'Unknown Profile';
-        }
+        req.profileName = req.body.name || req.body.fullName || req.params.name || 'Unknown Profile';
         
         next();
     } catch (error) {
@@ -681,9 +676,6 @@ const checkAndConsumeCredit = async (req, res, next) => {
 // Record profile credit usage after successful profile creation
 const recordProfileCredit = async (req, res, next) => {
     try {
-        console.log("recordProfileCredit - profileName:", req.profileName);
-        console.log("recordProfileCredit - session:", req.session);
-        
         if (req.profileName && req.session.user && req.session.user.id) {
             await pool.execute(
                 'INSERT INTO profile_credits (profile_name, user_id) VALUES (?, ?)',
@@ -1129,66 +1121,87 @@ app.post('/api/tracking/:name', requireAuth, checkAndConsumeCredit, async (req, 
 });
 
 // --- Individual Onboarding Form Submission ---
-app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (req, res) => {
+app.post('/api/registerIndividual', (req, res, next) => {
+    // Use multer only if multipart/form-data
+    if (req.headers['content-type'] && req.headers['content-type'].includes('multipart/form-data')) {
+        upload.single('passportImage')(req, res, (err) => {
+            if (err) {
+                return res.status(400).json({ message: err.message || 'File upload error' });
+            }
+            next();
+        });
+    } else {
+        next();
+    }
+}, requireAuth, async (req, res) => {
     try {
-        const userId = req.session.user.id; // Get the logged-in user's ID from the session
-        const {
-            fullName,
-            email,
-            residentStatus,
-            gender,
-            dateOfBirth,
-            nationality,
-            countryOfResidence,
-            otherNationalities,
-            specifiedOtherNationalities,
-            nationalIdNumber,
-            nationalIdExpiry,
-            passportNumber,
-            passportExpiry,
-            address,
-            state,
-            city,
-            zipCode,
-            contactNumber,
-            dialingCode,
-            workType,
-            industry,
-            productTypeOffered,
-            productOffered,
-            companyName,
-            positionInCompany
-        } = req.body;
+        const userId = req.session.user.id;
+        let data = req.body;
+        let passportImagePath = null;
+        // If file is uploaded, store its path
+        if (req.file) {
+            passportImagePath = req.file.path.replace(/\\/g, '/');
+        }
+        // Helper functions
+        const parseBool = v => v === true || v === 'true' || v === 1 || v === '1';
+        const formatDate = v => v ? new Date(v).toISOString().slice(0, 10) : null;
+        // Parse fields
+        const fullName = data.fullName || '';
+        const email = data.email || '';
+        const residentStatus = data.residentStatus || '';
+        const gender = data.gender || '';
+        const dateOfBirth = formatDate(data.dateOfBirth);
+        const nationality = data.nationality || '';
+        const countryOfResidence = data.countryOfResidence || '';
+        const otherNationalities = parseBool(data.otherNationalities);
+        const specifiedOtherNationalities = data.specifiedOtherNationalities || '';
+        const nationalIdNumber = data.nationalIdNumber || '';
+        const nationalIdExpiry = formatDate(data.nationalIdExpiry);
+        const passportNumber = data.passportNumber || '';
+        const passportExpiry = formatDate(data.passportExpiry);
+        const address = data.address || '';
+        const state = data.state || '';
+        const city = data.city || '';
+        const zipCode = data.zipCode || '';
+        const contactNumber = data.contactNumber || '';
+        const dialingCode = data.dialingCode || '';
+        const workType = data.workType || '';
+        const industry = data.industry || '';
+        const productTypeOffered = data.productTypeOffered || '';
+        const productOffered = data.productOffered || '';
+        const companyName = data.companyName || '';
+        const positionInCompany = data.positionInCompany || '';
 
+        // Validation
         if (!fullName || !email) {
             return res.status(400).json({ message: 'Full name and email are required' });
         }
-
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(email)) {
             return res.status(400).json({ message: 'Invalid email format' });
         }
-
         // Check if the email is already used by someone else
         const [emailCheck] = await pool.execute(
             'SELECT * FROM individualob WHERE email = ?',
             [email]
         );
-        
         if (emailCheck.length > 0) {
-            // Email already exists for another user
             await pool.execute('SET FOREIGN_KEY_CHECKS=1');
-            
             return res.status(400).json({
                 success: false,
                 message: `Email ${email} is already in use by another profile. Please choose a different email.`
             });
         }
-        
         // Add onboarded_at timestamp
         const onboardedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
-        
-        // Crucial change: Add user_id to the query
+        // Ensure passport_image_path column exists
+        try {
+            const [cols] = await pool.execute("SHOW COLUMNS FROM individualob LIKE 'passport_image_path'");
+            if (cols.length === 0) {
+                await pool.execute("ALTER TABLE individualob ADD COLUMN passport_image_path VARCHAR(255)");
+            }
+        } catch (e) { /* ignore if already exists */ }
+        // Insert with passport_image_path
         const insertQuery = `
             INSERT INTO individualob (
                 user_id, full_name, email, resident_status, gender, date_of_birth,
@@ -1197,12 +1210,11 @@ app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (r
                 passport_number, passport_expiry, address, state, city, zip_code,
                 contact_number, dialing_code, work_type, industry,
                 product_type_offered, product_offered, company_name, position_in_company,
-                onboarded_at, onboarded_by
+                onboarded_at, onboarded_by, passport_image_path
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
-
         const values = [
-            userId, // Use the user ID from the session
+            userId,
             fullName,
             email,
             residentStatus,
@@ -1210,7 +1222,7 @@ app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (r
             dateOfBirth,
             nationality,
             countryOfResidence,
-            otherNationalities ? 1 : 0, // Convert boolean to TINYINT(1)
+            otherNationalities ? 1 : 0,
             specifiedOtherNationalities,
             nationalIdNumber,
             nationalIdExpiry,
@@ -1229,12 +1241,10 @@ app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (r
             companyName,
             positionInCompany,
             onboardedAt,
-            req.session.user.name || 'System'
+            req.session.user.name || 'System',
+            passportImagePath
         ];
-
-
         await pool.execute(insertQuery, values);
-        
         // Record the onboarding activity
         try {
             await pool.execute(
@@ -1261,14 +1271,10 @@ app.post('/api/registerIndividual', requireAuth, checkAndConsumeCredit, async (r
             );
         } catch (activityError) {
             console.error('Error recording onboarding activity:', activityError);
-            // Continue even if activity recording fails
         }
-        
         res.status(201).json({ message: 'Individual registration successful' });
-
     } catch (error) {
         if (error.code === 'ER_DUP_ENTRY') {
-            // Handle duplicate email error
             return res.status(409).json({ message: 'Email already registered.' });
         }
         console.error('Error during individual registration:', error);
@@ -4215,142 +4221,3 @@ function mapScriptToLanguage(script) {
     
     return scriptToLang[script.toLowerCase()] || 'eng';
 }
-
-// Updating the registerIndividual route to handle file upload
-app.post('/registerIndividual', requireAuth, upload.single('passportImage'), async (req, res, next) => {
-    // Log request details for debugging
-    console.log("Request body after multer:", req.body);
-    console.log("Request file:", req.file);
-    
-    // Set profileName for recordProfileCredit middleware AFTER multer has parsed the form
-    req.profileName = req.body.fullName || 'Individual Profile';
-    next();
-}, recordProfileCredit, async (req, res) => {
-    try {
-        // Log request body again for debugging
-        console.log("Request body before processing:", req.body);
-        
-        // Get form fields from req.body
-        const {
-            fullName, email, residentStatus, gender, dateOfBirth, nationality, countryOfResidence,
-            otherNationalities, specifiedOtherNationalities, nationalIdNumber, nationalIdExpiry,
-            passportNumber, passportExpiry, address, state, city, zipCode, contactNumber,
-            dialingCode, workType, industry, productTypeOffered, productOffered, companyName, positionInCompany
-        } = req.body;
-
-        // Basic validation
-        console.log("Validation check - fullName:", fullName, "email:", email);
-        if (!fullName || !email) {
-            console.log("Validation failed - missing required fields");
-            return res.status(400).json({ message: 'Full name and email are required fields.' });
-        }
-
-        // Email format validation
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(email)) {
-            return res.status(400).json({ message: 'Invalid email format.' });
-        }
-        
-        // Get user ID from session
-        const userId = req.session.user && req.session.user.id;
-        
-        // Start a transaction
-        const connection = await pool.getConnection();
-        await connection.beginTransaction();
-        
-        try {
-            // Passport image file info
-            let passportImagePath = null;
-            if (req.file) {
-                // Store just the filename, not the full path
-                passportImagePath = req.file.filename;
-            }
-            
-            // Insert individual profile into database
-            const [result] = await connection.execute(
-                `INSERT INTO individualob 
-                (user_id, full_name, email, resident_status, gender, date_of_birth, nationality, 
-                country_of_residence, other_nationalities, specified_other_nationalities, 
-                national_id_number, national_id_expiry, passport_number, passport_expiry,
-                passport_image_path, address, state, city, zip_code, contact_number, 
-                dialing_code, work_type, industry, product_type_offered, product_offered, company_name, 
-                position_in_company, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-                [
-                    userId || null, 
-                    fullName || '', 
-                    email || '', 
-                    residentStatus || '', 
-                    gender || '', 
-                    dateOfBirth || null, 
-                    nationality || '',
-                    countryOfResidence || '', 
-                    otherNationalities === 'true' ? 1 : 0, 
-                    specifiedOtherNationalities || '',
-                    nationalIdNumber || '', 
-                    nationalIdExpiry || null, 
-                    passportNumber || '', 
-                    passportExpiry || null, 
-                    passportImagePath || null, 
-                    address || '', 
-                    state || '', 
-                    city || '', 
-                    zipCode || '', 
-                    contactNumber || '',
-                    dialingCode || '', 
-                    workType || '', 
-                    industry || '', 
-                    productTypeOffered || '', 
-                    productOffered || '', 
-                    companyName || '',
-                    positionInCompany || ''
-                ]
-            );
-
-            const profileId = result.insertId;
-            
-            // Log activity
-            if (userId) {
-                await logCustomerActivity({
-                    userId,
-                    action: 'register_individual',
-                    details: `Registered individual profile: ${fullName} (${email})`,
-                    relatedId: profileId,
-                    profileType: 'individual'
-                });
-            }
-
-            // Commit the transaction
-            await connection.commit();
-            
-            res.status(201).json({ 
-                message: 'Individual profile registered successfully', 
-                profileId 
-            });
-            
-        } catch (error) {
-            // Rollback in case of error
-            await connection.rollback();
-            console.error('Error registering individual profile:', error);
-            res.status(500).json({ message: 'Failed to register individual profile', error: error.message });
-        } finally {
-            connection.release();
-        }
-    } catch (error) {
-        console.error('Error handling individual registration:', error);
-        res.status(500).json({ message: 'Server error', error: error.message });
-    }
-});
-
-// Add route to serve uploaded passport images
-app.get('/uploads/:filename', requireAuth, (req, res) => {
-    const filename = req.params.filename;
-    const filePath = path.join(__dirname, 'uploads', filename);
-    
-    res.sendFile(filePath, (err) => {
-        if (err) {
-            console.error('Error sending file:', err);
-            res.status(404).json({ message: 'File not found' });
-        }
-    });
-});
