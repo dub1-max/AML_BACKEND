@@ -611,15 +611,18 @@ const checkAndConsumeCredit = async (req, res, next) => {
 
     // Check if profile has EVER been tracked before (even if inactive now)
     try {
-        const [trackingRows] = await pool.execute(
-            `SELECT * FROM user_tracking 
-             WHERE user_id = ? AND name = ?`,
-            [req.session.user.id, req.params.name]
-        );
-        
-        // If the profile has been tracked before (even if currently inactive), don't charge again
-        if (trackingRows.length > 0) {
-            return next();
+        // Only check tracking if we have a name parameter
+        if (req.params.name) {
+            const [trackingRows] = await pool.execute(
+                `SELECT * FROM user_tracking 
+                 WHERE user_id = ? AND name = ?`,
+                [req.session.user.id, req.params.name]
+            );
+            
+            // If the profile has been tracked before (even if currently inactive), don't charge again
+            if (trackingRows.length > 0) {
+                return next();
+            }
         }
     } catch (error) {
         console.error('Error checking existing tracking:', error);
@@ -661,7 +664,9 @@ const checkAndConsumeCredit = async (req, res, next) => {
         await connection.commit();
         
         // Store the profile name in the request for later use
-        req.profileName = req.body.name || req.body.fullName || req.params.name || 'Unknown Profile';
+        if (!req.profileName) {
+            req.profileName = req.body.name || req.body.fullName || req.params.name || 'Unknown Profile';
+        }
         
         next();
     } catch (error) {
@@ -4209,7 +4214,11 @@ function mapScriptToLanguage(script) {
 }
 
 // Updating the registerIndividual route to handle file upload
-app.post('/registerIndividual', requireAuth, recordProfileCredit, upload.single('passportImage'), async (req, res) => {
+app.post('/registerIndividual', requireAuth, async (req, res, next) => {
+    // Set profileName for recordProfileCredit middleware
+    req.profileName = req.body.fullName || 'Individual Profile';
+    next();
+}, recordProfileCredit, upload.single('passportImage'), async (req, res) => {
     try {
         // Get form fields from req.body
         const {
@@ -4231,7 +4240,7 @@ app.post('/registerIndividual', requireAuth, recordProfileCredit, upload.single(
         }
         
         // Get user ID from session
-        const userId = req.session.userId;
+        const userId = req.session.user && req.session.user.id;
         
         // Start a transaction
         const connection = await pool.getConnection();
@@ -4241,7 +4250,8 @@ app.post('/registerIndividual', requireAuth, recordProfileCredit, upload.single(
             // Passport image file info
             let passportImagePath = null;
             if (req.file) {
-                passportImagePath = req.file.path;
+                // Store just the filename, not the full path
+                passportImagePath = req.file.filename;
             }
             
             // Insert individual profile into database
@@ -4255,25 +4265,48 @@ app.post('/registerIndividual', requireAuth, recordProfileCredit, upload.single(
                 position_in_company, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
                 [
-                    userId, fullName, email, residentStatus, gender, dateOfBirth, nationality,
-                    countryOfResidence, otherNationalities === 'true' ? 1 : 0, specifiedOtherNationalities,
-                    nationalIdNumber, nationalIdExpiry, passportNumber, passportExpiry, 
-                    passportImagePath, address, state, city, zipCode, contactNumber,
-                    dialingCode, workType, industry, productTypeOffered, productOffered, companyName,
-                    positionInCompany
+                    userId || null, 
+                    fullName || '', 
+                    email || '', 
+                    residentStatus || '', 
+                    gender || '', 
+                    dateOfBirth || null, 
+                    nationality || '',
+                    countryOfResidence || '', 
+                    otherNationalities === 'true' ? 1 : 0, 
+                    specifiedOtherNationalities || '',
+                    nationalIdNumber || '', 
+                    nationalIdExpiry || null, 
+                    passportNumber || '', 
+                    passportExpiry || null, 
+                    passportImagePath || null, 
+                    address || '', 
+                    state || '', 
+                    city || '', 
+                    zipCode || '', 
+                    contactNumber || '',
+                    dialingCode || '', 
+                    workType || '', 
+                    industry || '', 
+                    productTypeOffered || '', 
+                    productOffered || '', 
+                    companyName || '',
+                    positionInCompany || ''
                 ]
             );
 
             const profileId = result.insertId;
             
             // Log activity
-            await logCustomerActivity({
-                userId,
-                action: 'register_individual',
-                details: `Registered individual profile: ${fullName} (${email})`,
-                relatedId: profileId,
-                profileType: 'individual'
-            });
+            if (userId) {
+                await logCustomerActivity({
+                    userId,
+                    action: 'register_individual',
+                    details: `Registered individual profile: ${fullName} (${email})`,
+                    relatedId: profileId,
+                    profileType: 'individual'
+                });
+            }
 
             // Commit the transaction
             await connection.commit();
