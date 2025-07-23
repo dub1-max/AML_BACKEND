@@ -681,6 +681,9 @@ const checkAndConsumeCredit = async (req, res, next) => {
 // Record profile credit usage after successful profile creation
 const recordProfileCredit = async (req, res, next) => {
     try {
+        console.log("recordProfileCredit - profileName:", req.profileName);
+        console.log("recordProfileCredit - session:", req.session);
+        
         if (req.profileName && req.session.user && req.session.user.id) {
             await pool.execute(
                 'INSERT INTO profile_credits (profile_name, user_id) VALUES (?, ?)',
@@ -4214,12 +4217,19 @@ function mapScriptToLanguage(script) {
 }
 
 // Updating the registerIndividual route to handle file upload
-app.post('/registerIndividual', requireAuth, async (req, res, next) => {
-    // Set profileName for recordProfileCredit middleware
+app.post('/registerIndividual', requireAuth, upload.single('passportImage'), async (req, res, next) => {
+    // Log request details for debugging
+    console.log("Request body after multer:", req.body);
+    console.log("Request file:", req.file);
+    
+    // Set profileName for recordProfileCredit middleware AFTER multer has parsed the form
     req.profileName = req.body.fullName || 'Individual Profile';
     next();
-}, recordProfileCredit, upload.single('passportImage'), async (req, res) => {
+}, recordProfileCredit, async (req, res) => {
     try {
+        // Log request body again for debugging
+        console.log("Request body before processing:", req.body);
+        
         // Get form fields from req.body
         const {
             fullName, email, residentStatus, gender, dateOfBirth, nationality, countryOfResidence,
@@ -4229,7 +4239,9 @@ app.post('/registerIndividual', requireAuth, async (req, res, next) => {
         } = req.body;
 
         // Basic validation
+        console.log("Validation check - fullName:", fullName, "email:", email);
         if (!fullName || !email) {
+            console.log("Validation failed - missing required fields");
             return res.status(400).json({ message: 'Full name and email are required fields.' });
         }
 
