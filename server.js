@@ -22,7 +22,7 @@ const ALLOWED_ORIGINS = [
 ];
 
 app.get('/', (req, res) => {
-    res.json({ message: 'AML Checker Backend is running!' });
+    res.json({ message: 'KycSync Backend is running!' });
 });
 
 
