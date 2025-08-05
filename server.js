@@ -16,9 +16,11 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 const ALLOWED_ORIGINS = [
+    'https://app.kycsync.com',
     'https://www.kycsync.com',
     'http://localhost:5173',
-    'https://kycsync.com'
+    'https://kycsync.com',
+
 ];
 
 app.get('/', (req, res) => {
