@@ -16,12 +16,15 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 const ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://kycsync.com',
-    'http://kycsync.com:5173',
-    'https://kycsync.com',
     'https://www.kycsync.com',
+    'http://localhost:5173',
+    'https://kycsync.com'
 ];
+
+app.get('/', (req, res) => {
+    res.json({ message: 'AML Checker Backend is running!' });
+});
+
 
 app.use(cors({
     origin: function(origin, callback) {
@@ -42,7 +45,7 @@ app.use(cors({
 app.use(express.json());
 
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'your-super-secret-key', // Use a strong secret in production
+    secret: process.env.SESSION_SECRET || 'aml_checker_secret', // Use a strong secret in production
     resave: false,
     saveUninitialized: false,
     cookie: {
